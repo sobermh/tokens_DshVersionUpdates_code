@@ -4,6 +4,12 @@ import { open } from 'node:fs/promises'
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import Schema from '@deepseek-ai/schemastery'
 
+/* ====================================================================
+ * 插件标识与配置
+ * Cordis 插件名、依赖注入声明、GitHub Release 端点与响应上限，
+ * 以及后台轮询策略的 Schema（enabled、初始延迟、间隔、请求超时）。
+ * ==================================================================== */
+
 /** Stable Cordis plugin name. */
 export const name = 'tokens-dsh-version-updates'
 
@@ -30,6 +36,12 @@ export const Config = Schema.object({
   intervalMs: Schema.number().step(1).min(1).max(MAX_TIMER_DELAY_MS).default(6 * 60 * 60 * 1000),
   requestTimeoutMs: Schema.number().step(1).min(1).max(MAX_TIMER_DELAY_MS).default(15_000),
 })
+
+/* ====================================================================
+ * SemVer 解析与比较（导出）
+ * 严格的 Semantic Versioning 解析和无溢出精度比较，
+ * 供本插件与测试使用；数值段保留字符串形式避免大数溢出。
+ * ==================================================================== */
 
 /**
  * Parse strict Semantic Versioning with an optional lowercase `v` prefix.
@@ -66,6 +78,12 @@ export function compareSemVerVersions(left, right) {
   if (leftVersion === null || rightVersion === null) return null
   return compareParsedSemVer(leftVersion, rightVersion)
 }
+
+/* ====================================================================
+ * 版本检查（导出）
+ * 请求 GitHub latest Release 并与当前版本比较；任何请求、解析或
+ * 校验失败都返回 null，不向调用方抛出。
+ * ==================================================================== */
 
 /**
  * Check the TokensHarness GitHub repository for a newer stable Release.
@@ -113,6 +131,13 @@ export async function checkForStableUpdate(options) {
   }
 }
 
+/* ====================================================================
+ * 插件主体
+ * 在一个 effect 作用域内组合全部运行态：提示状态持久化、去重的
+ * 版本检查、确认后的下载与安装包移交、手动与后台两条触发路径、
+ * 托盘菜单项，以及卸载时的计时器清理与请求中止。
+ * ==================================================================== */
+
 /**
  * Register effect-scoped update polling and its dynamic tray command.
  * @param {ContextWithDesktopRuntime} ctx Host context carrying the desktop adapter.
@@ -135,6 +160,7 @@ export function apply(ctx, config) {
     let downloadTask
     let refreshTray = () => {}
 
+    /* --------------------- 提示状态读写与去重 --------------------- */
     const persistState = async () => {
       try {
         await writeFileAtomic(adapter.statePath, renderState(state), {
@@ -163,6 +189,7 @@ export function apply(ctx, config) {
       await persistState()
     }
 
+    /* ----------------------- 单飞的版本检查 ----------------------- */
     const startCheck = () => {
       if (inFlight !== undefined) return inFlight
       checking = true
@@ -202,6 +229,7 @@ export function apply(ctx, config) {
       return availableVersion
     }
 
+    /* ------------------- 确认下载与安装包移交 ------------------- */
     const startDownload = (version) => {
       if (downloadTask !== undefined) return downloadTask
       const task = (async () => {
@@ -244,6 +272,7 @@ export function apply(ctx, config) {
       if (!disposed) await startDownload(version)
     }
 
+    /* ------------------- 手动与后台两条触发路径 ------------------- */
     const runManualCheck = () => {
       manualTask ??= (async () => {
         if (availableVersion !== undefined) {
@@ -281,6 +310,7 @@ export function apply(ctx, config) {
       }, delayMs)
     }
 
+    /* ------------------- 托盘注册、启动与卸载 ------------------- */
     const registration = ctx.desktopRuntime.registerTrayItem({
       group: 'status',
       order: 10,
@@ -308,6 +338,12 @@ export function apply(ctx, config) {
     }
   }, '@tokens/dsh-version-updates: polling and installer handoff')
 }
+
+/* ====================================================================
+ * 内部辅助函数
+ * 限长响应读取、Release 文档与提示状态的严格解析、SemVer 内部
+ * 比较原语。均不导出；新增仅本文件使用的逻辑放在本区。
+ * ==================================================================== */
 
 async function readLimitedBody(response) {
   const declaredLength = response.headers.get('content-length')
