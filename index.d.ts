@@ -1,11 +1,20 @@
 /** Fetch-compatible request function used by the release checker. */
 export type UpdateRequest = (url: string, init: RequestInit) => Promise<Response>
 
+/** One installer artifact published on the latest stable GitHub Release. */
+export interface ReleaseAsset {
+  readonly name: string
+  readonly url: string
+  readonly size: number
+  readonly digest: string | null
+}
+
 /** Successful comparison returned by the latest stable GitHub Release. */
 export interface UpdateCheckResult {
   readonly status: 'up-to-date' | 'update-available'
   readonly currentVersion: string
   readonly latestVersion: string
+  readonly assets: readonly ReleaseAsset[]
 }
 
 /** Strictly parsed Semantic Versioning components. */
@@ -24,6 +33,8 @@ export interface Config {
   initialDelayMs: number
   intervalMs: number
   requestTimeoutMs: number
+  /** HTTPS mirror prefix replacing `https://github.com` in asset URLs; empty uses GitHub directly. */
+  downloadBaseURL: string
 }
 
 /** Callable configuration validator supplied by Schemastery. */
@@ -86,3 +97,18 @@ export function checkForStableUpdate(options: {
   request?: UpdateRequest
 }): Promise<UpdateCheckResult | null>
 export function apply(ctx: UpdatePluginContext, config: Config): void
+
+export const MAX_INSTALLER_BYTES: number
+export function selectInstallerAsset(
+  assets: readonly ReleaseAsset[],
+  platform?: string,
+  arch?: string,
+): ReleaseAsset | null
+export function downloadInstaller(options: {
+  asset: ReleaseAsset
+  url: string
+  request: UpdateRequest
+  directory: string
+  signal?: AbortSignal
+}): Promise<string>
+export function openInstaller(path: string, platform?: string): void

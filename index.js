@@ -1,11 +1,14 @@
 /** TokensHarness GitHub Release discovery and tray update plugin. */
 
 import { open } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import Schema from '@deepseek-ai/schemastery'
+import { downloadInstaller, openInstaller, selectInstallerAsset } from './download.js'
 import { PACKAGE_NAME, PLUGIN_NAME, PRODUCT_NAME, RELEASE_ENDPOINT } from './identity.js'
 
 export { RELEASE_ENDPOINT }
+export { selectInstallerAsset, downloadInstaller, openInstaller, MAX_INSTALLER_BYTES } from './download.js'
 
 /* ====================================================================
  * 插件标识与配置
@@ -34,6 +37,9 @@ export const Config = Schema.object({
   initialDelayMs: Schema.number().step(1).min(0).max(MAX_TIMER_DELAY_MS).default(60_000),
   intervalMs: Schema.number().step(1).min(1).max(MAX_TIMER_DELAY_MS).default(6 * 60 * 60 * 1000),
   requestTimeoutMs: Schema.number().step(1).min(1).max(MAX_TIMER_DELAY_MS).default(15_000),
+  // 下载镜像前缀：默认空串走 GitHub 资产原始地址；设置后替换资产 URL 的
+  // https://github.com 前缀（如 https://ghproxy.example/https://github.com）。
+  downloadBaseURL: Schema.string().default(''),
 })
 
 /* ====================================================================
@@ -121,12 +127,13 @@ export async function checkForStableUpdate(options) {
     return null
   }
 
-  const latest = parseVersionResponse(body)
-  if (latest === null) return null
+  const parsed = parseVersionResponse(body)
+  if (parsed === null) return null
   return {
-    status: compareParsedSemVer(latest, current) > 0 ? 'update-available' : 'up-to-date',
+    status: compareParsedSemVer(parsed.latest, current) > 0 ? 'update-available' : 'up-to-date',
     currentVersion: current.version,
-    latestVersion: latest.version,
+    latestVersion: parsed.latest.version,
+    assets: parsed.assets,
   }
 }
 
@@ -148,6 +155,7 @@ export function apply(ctx, config) {
     let disposed = false
     let checking = false
     let availableVersion
+    let availableAssets = []
     let downloadingVersion
     let state = EMPTY_STATE
     let pollTimer
@@ -224,8 +232,42 @@ export function apply(ctx, config) {
       availableVersion = result.status === 'update-available' && adapter.canDownload
         ? result.latestVersion
         : undefined
+      availableAssets = availableVersion === undefined ? [] : result.assets ?? []
       refreshTray()
       return availableVersion
+    }
+
+    /* ---------------- 品牌确认弹窗（无 Electron 时回退） ---------------- */
+    const confirmDownload = async (version) => {
+      const electron = await loadElectron()
+      if (electron === null) return adapter.confirmDownload(version)
+      const result = await electron.dialog.showMessageBox({
+        type: 'info',
+        title: `${PRODUCT_NAME} Update Available`,
+        message: `${PRODUCT_NAME} ${version} is available.`,
+        detail: 'Download this update now?',
+        buttons: ['Download', 'Later'],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+      })
+      return result.response === 0
+    }
+
+    const announceReady = async (version, path) => {
+      const electron = await loadElectron()
+      if (electron === null) return
+      await electron.dialog.showMessageBox({
+        type: 'info',
+        title: `${PRODUCT_NAME} Update Downloaded`,
+        message: `${PRODUCT_NAME} ${version} is ready to install.`,
+        detail: process.platform === 'darwin'
+          ? `The disk image has opened. Replace ${PRODUCT_NAME} in Applications, then reopen it.`
+          : `The installer has started. Follow it to update ${PRODUCT_NAME}.\n\n${path}`,
+        buttons: ['OK'],
+        defaultId: 0,
+        noLink: true,
+      })
     }
 
     /* ------------------- 确认下载与安装包移交 ------------------- */
@@ -234,7 +276,7 @@ export function apply(ctx, config) {
       const task = (async () => {
         let confirmed
         try {
-          confirmed = await adapter.confirmDownload(version)
+          confirmed = await confirmDownload(version)
         } catch {
           return
         }
@@ -243,12 +285,24 @@ export function apply(ctx, config) {
         const confirmedVersion = observeResult(await startCheck())
         if (confirmedVersion !== version || disposed) return
 
+        const asset = selectInstallerAsset(availableAssets)
+        if (asset === null) return
+
         const controller = new AbortController()
         downloadController = controller
         downloadingVersion = version
         refreshTray()
         try {
-          await adapter.downloadAndOpen(version, controller.signal)
+          const path = await downloadInstaller({
+            asset,
+            url: rewriteDownloadURL(asset.url, config.downloadBaseURL),
+            request: adapter.request,
+            directory: join(dirname(adapter.statePath), version),
+            signal: controller.signal,
+          })
+          controller.signal.throwIfAborted()
+          openInstaller(path)
+          await announceReady(version, path)
         } catch {
           // Download, filesystem, and installer handoff failures stay silent.
         } finally {
@@ -386,7 +440,27 @@ function parseVersionResponse(body) {
     || value.prerelease !== false
     || typeof value.tag_name !== 'string'
     || !value.tag_name.startsWith('v')) return null
-  return parseCanonicalStableVersion(value.tag_name.slice(1))
+  const latest = parseCanonicalStableVersion(value.tag_name.slice(1))
+  if (latest === null) return null
+  return { latest, assets: parseReleaseAssets(value.assets) }
+}
+
+function parseReleaseAssets(value) {
+  if (!Array.isArray(value)) return []
+  const assets = []
+  for (const item of value) {
+    if (!isRecord(item)
+      || typeof item.name !== 'string'
+      || typeof item.browser_download_url !== 'string'
+      || !item.browser_download_url.startsWith('https://')) continue
+    assets.push({
+      name: item.name,
+      url: item.browser_download_url,
+      size: typeof item.size === 'number' ? item.size : 0,
+      digest: typeof item.digest === 'string' ? item.digest : null,
+    })
+  }
+  return assets
 }
 
 function parseCanonicalStableVersion(input) {
@@ -434,6 +508,24 @@ function isNumeric(identifier) {
 
 function hasLeadingZero(identifier) {
   return identifier.length > 1 && identifier.startsWith('0')
+}
+
+let electronModule
+async function loadElectron() {
+  if (electronModule !== undefined) return electronModule
+  try {
+    const value = await import('electron')
+    electronModule = typeof value.dialog?.showMessageBox === 'function' ? value : null
+  } catch {
+    electronModule = null
+  }
+  return electronModule
+}
+
+function rewriteDownloadURL(url, baseURL) {
+  const prefix = typeof baseURL === 'string' ? baseURL.trim().replace(/\/+$/u, '') : ''
+  if (prefix === '' || !prefix.startsWith('https://')) return url
+  return url.replace(/^https:\/\/github\.com/u, prefix)
 }
 
 function parseState(text) {

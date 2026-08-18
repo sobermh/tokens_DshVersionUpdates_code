@@ -40,6 +40,7 @@ test('checks only the public TokensHarness latest Release', async () => {
     status: 'update-available',
     currentVersion: '0.1.0',
     latestVersion: '0.2.0',
+    assets: [],
   })
   assert.equal(calls.length, 1)
   assert.equal(calls[0].url, RELEASE_ENDPOINT)
@@ -82,6 +83,7 @@ test('registers one manual update tray command through desktopRuntime', async ()
       status: 'up-to-date',
       currentVersion: '0.1.0',
       latestVersion: '0.1.0',
+      assets: [],
     }])
     await disposer()
   } finally {
@@ -97,4 +99,48 @@ test('identity constants stay aligned with static manifests', async () => {
   assert.equal(manifest.name, PACKAGE_NAME)
   assert.ok(patch.includes(`name: '${PACKAGE_NAME}'`))
   assert.equal((await import('../index.js')).name, PLUGIN_NAME)
+})
+
+test('selects the platform-matching installer asset', async () => {
+  const { selectInstallerAsset } = await import('../download.js')
+  const assets = [
+    { name: 'TokensHarness-0.2.0-macos-arm64-installer.dmg', url: 'https://github.com/a', size: 1, digest: null },
+    { name: 'TokensHarness-0.2.0-windows-amd64-installer.exe', url: 'https://github.com/b', size: 1, digest: null },
+    { name: 'TokensHarness-0.2.0-SHA256SUMS.txt', url: 'https://github.com/c', size: 1, digest: null },
+  ]
+  assert.equal(selectInstallerAsset(assets, 'win32', 'x64')?.name, 'TokensHarness-0.2.0-windows-amd64-installer.exe')
+  assert.equal(selectInstallerAsset(assets, 'darwin', 'arm64')?.name, 'TokensHarness-0.2.0-macos-arm64-installer.dmg')
+  assert.equal(selectInstallerAsset(assets, 'darwin', 'x64'), null)
+  assert.equal(selectInstallerAsset(assets, 'linux', 'x64'), null)
+})
+
+test('downloads, verifies, and rejects installers by SHA-256', async () => {
+  const { downloadInstaller } = await import('../download.js')
+  const { createHash } = await import('node:crypto')
+  const { readFile } = await import('node:fs/promises')
+  const root = await mkdtemp(join(tmpdir(), 'dsh-version-updates-dl-'))
+  const payload = Buffer.from('installer-bytes')
+  const digest = `sha256:${createHash('sha256').update(payload).digest('hex')}`
+
+  try {
+    const good = await downloadInstaller({
+      asset: { name: 'a.exe', url: 'https://github.com/x', size: payload.byteLength, digest },
+      url: 'https://github.com/x',
+      request: async () => new Response(payload),
+      directory: root,
+    })
+    assert.deepEqual(await readFile(good), payload)
+
+    await assert.rejects(
+      downloadInstaller({
+        asset: { name: 'b.exe', url: 'https://github.com/x', size: payload.byteLength, digest },
+        url: 'https://github.com/x',
+        request: async () => new Response(Buffer.from('tampered-bytes!')),
+        directory: root,
+      }),
+      /digest mismatch|declared size/u,
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })

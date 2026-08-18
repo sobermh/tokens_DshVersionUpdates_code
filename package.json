@@ -20,10 +20,14 @@
     "./package.json": "./package.json",
     "./identity.js": {
       "default": "./identity.js"
+    },
+    "./download.js": {
+      "default": "./download.js"
     }
   },
   "files": [
     "index.js",
+    "download.js",
     "identity.js",
     "index.d.ts",
     "cordis.patch.yml",
