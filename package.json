@@ -17,10 +17,14 @@
       "default": "./index.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./identity.js": {
+      "default": "./identity.js"
+    }
   },
   "files": [
     "index.js",
+    "identity.js",
     "index.d.ts",
     "cordis.patch.yml",
     "README.md"

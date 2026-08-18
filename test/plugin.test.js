@@ -88,3 +88,13 @@ test('registers one manual update tray command through desktopRuntime', async ()
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test('identity constants stay aligned with static manifests', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const { PACKAGE_NAME, PLUGIN_NAME } = await import('../identity.js')
+  const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+  const patch = await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  assert.equal(manifest.name, PACKAGE_NAME)
+  assert.ok(patch.includes(`name: '${PACKAGE_NAME}'`))
+  assert.equal((await import('../index.js')).name, PLUGIN_NAME)
+})

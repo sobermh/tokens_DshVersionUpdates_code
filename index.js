@@ -3,6 +3,9 @@
 import { open } from 'node:fs/promises'
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import Schema from '@deepseek-ai/schemastery'
+import { PACKAGE_NAME, PLUGIN_NAME, PRODUCT_NAME, RELEASE_ENDPOINT } from './identity.js'
+
+export { RELEASE_ENDPOINT }
 
 /* ====================================================================
  * 插件标识与配置
@@ -11,14 +14,10 @@ import Schema from '@deepseek-ai/schemastery'
  * ==================================================================== */
 
 /** Stable Cordis plugin name. */
-export const name = 'tokens-dsh-version-updates'
+export const name = PLUGIN_NAME
 
 /** Native adapter required for network, tray, confirmation, and installer access. */
 export const inject = ['desktopRuntime']
-
-/** Public GitHub API endpoint returning the latest stable TokensHarness release. */
-export const RELEASE_ENDPOINT =
-  'https://api.github.com/repos/sobermh/tokens_TokensHarness_code/releases/latest'
 
 /** Maximum response body bytes accepted from GitHub's release document. */
 export const MAX_VERSION_RESPONSE_BYTES = 256 * 1024
@@ -98,7 +97,7 @@ export async function checkForStableUpdate(options) {
     method: 'GET',
     headers: {
       Accept: 'application/vnd.github+json',
-      'User-Agent': 'TokensHarness',
+      'User-Agent': PRODUCT_NAME,
       'X-GitHub-Api-Version': '2022-11-28',
     },
     cache: 'no-store',
@@ -317,8 +316,8 @@ export function apply(ctx, config) {
       label: () => downloadingVersion === undefined
         ? availableVersion === undefined
           ? checking ? 'Checking for Updates…' : 'Check for Updates…'
-          : `TokensHarness ${availableVersion} Available`
-        : `Downloading TokensHarness ${downloadingVersion}…`,
+          : `${PRODUCT_NAME} ${availableVersion} Available`
+        : `Downloading ${PRODUCT_NAME} ${downloadingVersion}…`,
       invoke: runManualCheck,
     })
     refreshTray = registration.refresh
@@ -336,7 +335,7 @@ export function apply(ctx, config) {
       if (inFlight !== undefined) pending.push(inFlight)
       await Promise.allSettled(pending)
     }
-  }, '@tokens/dsh-version-updates: polling and installer handoff')
+  }, `${PACKAGE_NAME}: polling and installer handoff`)
 }
 
 /* ====================================================================

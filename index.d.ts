@@ -72,7 +72,7 @@ export interface UpdatePluginContext {
   ): unknown
 }
 
-export const name: 'tokens-dsh-version-updates'
+export const name: string
 export const inject: readonly ['desktopRuntime']
 export const Config: ConfigSchema
 export const RELEASE_ENDPOINT: string
