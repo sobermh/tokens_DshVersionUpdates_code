@@ -5,7 +5,19 @@ import { dirname, join } from 'node:path'
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import Schema from '@deepseek-ai/schemastery'
 import { downloadInstaller, openInstaller, selectInstallerAsset } from './download.js'
-import { GITHUB_OWNER, GITHUB_REPO, PACKAGE_NAME, PLUGIN_NAME, PRODUCT_NAME, RELEASE_ENDPOINT } from './identity.js'
+import {
+  DOWNLOAD_BASE_URL,
+  GITHUB_OWNER,
+  GITHUB_REPO,
+  INITIAL_DELAY_MS,
+  INTERVAL_MS,
+  PACKAGE_NAME,
+  PLUGIN_NAME,
+  PRODUCT_NAME,
+  RELEASE_ENDPOINT,
+  REQUEST_TIMEOUT_MS,
+  UPDATES_ENABLED,
+} from './identity.js'
 
 export { RELEASE_ENDPOINT }
 export { selectInstallerAsset, downloadInstaller, openInstaller, MAX_INSTALLER_BYTES } from './download.js'
@@ -32,16 +44,13 @@ const SEMVER_PATTERN =
   /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/u
 
 /** Validated scheduled update policy. */
+// 每个字段的默认值集中定义在 identity.js，用户可经 profile 补丁按需覆盖。
 export const Config = Schema.object({
-  enabled: Schema.boolean().default(true),
-  initialDelayMs: Schema.number().step(1).min(0).max(MAX_TIMER_DELAY_MS).default(60_000),
-  intervalMs: Schema.number().step(1).min(1).max(MAX_TIMER_DELAY_MS).default(6 * 60 * 60 * 1000),
-  requestTimeoutMs: Schema.number().step(1).min(1).max(MAX_TIMER_DELAY_MS).default(15_000),
-  // 下载镜像前缀：默认空串走 GitHub 资产原始地址；设置后替换资产 URL 的
-  // https://github.com 前缀（如 https://ghproxy.example/https://github.com）。
-  downloadBaseURL: Schema.string().default(''),
-  // 身份覆盖：默认取 identity.js，衍生版或 fork 可通过 profile 补丁改指
-  // 显示名与 GitHub Release 版本源，无需改插件代码。
+  enabled: Schema.boolean().default(UPDATES_ENABLED),
+  initialDelayMs: Schema.number().step(1).min(0).max(MAX_TIMER_DELAY_MS).default(INITIAL_DELAY_MS),
+  intervalMs: Schema.number().step(1).min(1).max(MAX_TIMER_DELAY_MS).default(INTERVAL_MS),
+  requestTimeoutMs: Schema.number().step(1).min(1).max(MAX_TIMER_DELAY_MS).default(REQUEST_TIMEOUT_MS),
+  downloadBaseURL: Schema.string().default(DOWNLOAD_BASE_URL),
   productName: Schema.string().default(PRODUCT_NAME),
   githubOwner: Schema.string().default(GITHUB_OWNER),
   githubRepo: Schema.string().default(GITHUB_REPO),
