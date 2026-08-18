@@ -137,7 +137,9 @@ export function openInstaller(path, platform = process.platform) {
  * ==================================================================== */
 
 function parseSha256Digest(digest) {
-  if (typeof digest !== 'string') return null
-  const match = /^sha256:([0-9a-f]{64})$/u.exec(digest)
-  return match === null ? null : match[1]
+  if (digest === null || digest === undefined) return null
+  if (typeof digest !== 'string') throw new Error('installer digest is invalid')
+  const match = /^sha256:([0-9a-f]{64})$/iu.exec(digest)
+  if (match === null) throw new Error('installer digest is invalid')
+  return match[1].toLowerCase()
 }
