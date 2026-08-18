@@ -144,3 +144,44 @@ test('downloads, verifies, and rejects installers by SHA-256', async () => {
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test('config overrides product name and release source', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-version-updates-cfg-'))
+  const requested = []
+  let tray, disposer
+  const ctx = {
+    desktopRuntime: {
+      updates: {
+        isPackaged: false,
+        canDownload: true,
+        currentVersion: '0.1.0',
+        statePath: join(root, 'state.json'),
+        request: async (url, init) => {
+          requested.push({ url, agent: new Headers(init.headers).get('user-agent') })
+          return releaseResponse('0.2.0')
+        },
+        async confirmDownload() { return false },
+        async showManualCheckResult() {},
+        async downloadAndOpen() {},
+      },
+      registerTrayItem(item) { tray = item; return { refresh() {}, dispose() {} } },
+    },
+    effect(register) { disposer = register() },
+  }
+
+  try {
+    apply(ctx, Config({
+      enabled: false,
+      productName: 'MyBrand',
+      githubOwner: 'my-org',
+      githubRepo: 'my_repo',
+    }))
+    await tray.invoke()
+    assert.equal(requested[0].url, 'https://api.github.com/repos/my-org/my_repo/releases/latest')
+    assert.equal(requested[0].agent, 'MyBrand')
+    assert.equal(tray.label(), 'MyBrand 0.2.0 Available')
+    await disposer()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})

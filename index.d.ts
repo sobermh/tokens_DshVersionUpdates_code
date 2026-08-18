@@ -35,6 +35,12 @@ export interface Config {
   requestTimeoutMs: number
   /** HTTPS mirror prefix replacing `https://github.com` in asset URLs; empty uses GitHub directly. */
   downloadBaseURL: string
+  /** User-visible product name in dialogs and tray labels; defaults to identity.js. */
+  productName: string
+  /** GitHub owner of the release repository; defaults to identity.js. */
+  githubOwner: string
+  /** GitHub repository name of the release source; defaults to identity.js. */
+  githubRepo: string
 }
 
 /** Callable configuration validator supplied by Schemastery. */
@@ -95,6 +101,8 @@ export function checkForStableUpdate(options: {
   currentVersion: string
   signal?: AbortSignal
   request?: UpdateRequest
+  endpoint?: string
+  userAgent?: string
 }): Promise<UpdateCheckResult | null>
 export function apply(ctx: UpdatePluginContext, config: Config): void
 

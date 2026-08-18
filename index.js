@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import Schema from '@deepseek-ai/schemastery'
 import { downloadInstaller, openInstaller, selectInstallerAsset } from './download.js'
-import { PACKAGE_NAME, PLUGIN_NAME, PRODUCT_NAME, RELEASE_ENDPOINT } from './identity.js'
+import { GITHUB_OWNER, GITHUB_REPO, PACKAGE_NAME, PLUGIN_NAME, PRODUCT_NAME, RELEASE_ENDPOINT } from './identity.js'
 
 export { RELEASE_ENDPOINT }
 export { selectInstallerAsset, downloadInstaller, openInstaller, MAX_INSTALLER_BYTES } from './download.js'
@@ -40,6 +40,11 @@ export const Config = Schema.object({
   // 下载镜像前缀：默认空串走 GitHub 资产原始地址；设置后替换资产 URL 的
   // https://github.com 前缀（如 https://ghproxy.example/https://github.com）。
   downloadBaseURL: Schema.string().default(''),
+  // 身份覆盖：默认取 identity.js，衍生版或 fork 可通过 profile 补丁改指
+  // 显示名与 GitHub Release 版本源，无需改插件代码。
+  productName: Schema.string().default(PRODUCT_NAME),
+  githubOwner: Schema.string().default(GITHUB_OWNER),
+  githubRepo: Schema.string().default(GITHUB_REPO),
 })
 
 /* ====================================================================
@@ -92,7 +97,7 @@ export function compareSemVerVersions(left, right) {
 
 /**
  * Check the TokensHarness GitHub repository for a newer stable Release.
- * @param {{ currentVersion: string, signal?: AbortSignal, request?: import('./index.js').UpdateRequest }} options Check inputs.
+ * @param {{ currentVersion: string, signal?: AbortSignal, request?: import('./index.js').UpdateRequest, endpoint?: string, userAgent?: string }} options Check inputs.
  * @returns {Promise<import('./index.js').UpdateCheckResult | null>} Comparison or null on failure.
  */
 export async function checkForStableUpdate(options) {
@@ -103,7 +108,7 @@ export async function checkForStableUpdate(options) {
     method: 'GET',
     headers: {
       Accept: 'application/vnd.github+json',
-      'User-Agent': PRODUCT_NAME,
+      'User-Agent': options.userAgent ?? PRODUCT_NAME,
       'X-GitHub-Api-Version': '2022-11-28',
     },
     cache: 'no-store',
@@ -114,7 +119,7 @@ export async function checkForStableUpdate(options) {
 
   let response
   try {
-    response = await request(RELEASE_ENDPOINT, init)
+    response = await request(options.endpoint ?? RELEASE_ENDPOINT, init)
   } catch {
     return null
   }
@@ -151,6 +156,8 @@ export async function checkForStableUpdate(options) {
  */
 export function apply(ctx, config) {
   const adapter = ctx.desktopRuntime.updates
+  const productName = config.productName ?? PRODUCT_NAME
+  const releaseEndpoint = `https://api.github.com/repos/${config.githubOwner ?? GITHUB_OWNER}/${config.githubRepo ?? GITHUB_REPO}/releases/latest`
   ctx.effect(() => {
     let disposed = false
     let checking = false
@@ -211,6 +218,8 @@ export function apply(ctx, config) {
             currentVersion: adapter.currentVersion,
             signal: controller.signal,
             request: adapter.request,
+            endpoint: releaseEndpoint,
+            userAgent: productName,
           })
         } catch {
           return null
@@ -243,8 +252,8 @@ export function apply(ctx, config) {
       if (electron === null) return adapter.confirmDownload(version)
       const result = await electron.dialog.showMessageBox({
         type: 'info',
-        title: `${PRODUCT_NAME} Update Available`,
-        message: `${PRODUCT_NAME} ${version} is available.`,
+        title: `${productName} Update Available`,
+        message: `${productName} ${version} is available.`,
         detail: 'Download this update now?',
         buttons: ['Download', 'Later'],
         defaultId: 1,
@@ -259,11 +268,11 @@ export function apply(ctx, config) {
       if (electron === null) return
       await electron.dialog.showMessageBox({
         type: 'info',
-        title: `${PRODUCT_NAME} Update Downloaded`,
-        message: `${PRODUCT_NAME} ${version} is ready to install.`,
+        title: `${productName} Update Downloaded`,
+        message: `${productName} ${version} is ready to install.`,
         detail: process.platform === 'darwin'
-          ? `The disk image has opened. Replace ${PRODUCT_NAME} in Applications, then reopen it.`
-          : `The installer has started. Follow it to update ${PRODUCT_NAME}.\n\n${path}`,
+          ? `The disk image has opened. Replace ${productName} in Applications, then reopen it.`
+          : `The installer has started. Follow it to update ${productName}.\n\n${path}`,
         buttons: ['OK'],
         defaultId: 0,
         noLink: true,
@@ -277,7 +286,7 @@ export function apply(ctx, config) {
         await electron.dialog.showMessageBox({
           type: 'warning',
           title: 'Unable to Check for Updates',
-          message: `${PRODUCT_NAME} could not check for updates.`,
+          message: `${productName} could not check for updates.`,
           detail: 'Please try again later.',
           buttons: ['OK'],
           defaultId: 0,
@@ -287,8 +296,8 @@ export function apply(ctx, config) {
       }
       await electron.dialog.showMessageBox({
         type: 'info',
-        title: `${PRODUCT_NAME} Is Up to Date`,
-        message: `No newer version of ${PRODUCT_NAME} is available.`,
+        title: `${productName} Is Up to Date`,
+        message: `No newer version of ${productName} is available.`,
         detail: `Installed version: ${result.currentVersion}`,
         buttons: ['OK'],
         defaultId: 0,
@@ -396,8 +405,8 @@ export function apply(ctx, config) {
       label: () => downloadingVersion === undefined
         ? availableVersion === undefined
           ? checking ? 'Checking for Updates…' : 'Check for Updates…'
-          : `${PRODUCT_NAME} ${availableVersion} Available`
-        : `Downloading ${PRODUCT_NAME} ${downloadingVersion}…`,
+          : `${productName} ${availableVersion} Available`
+        : `Downloading ${productName} ${downloadingVersion}…`,
       invoke: runManualCheck,
     })
     refreshTray = registration.refresh
