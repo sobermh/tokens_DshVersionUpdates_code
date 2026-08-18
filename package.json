@@ -1,5 +1,5 @@
 {
-  "name": "@tokens/tokensharness-updates",
+  "name": "@tokens/dsh-version-updates",
   "version": "0.1.0",
   "private": true,
   "description": "TokensHarness GitHub Release update plugin",

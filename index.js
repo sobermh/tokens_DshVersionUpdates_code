@@ -5,7 +5,7 @@ import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import Schema from '@deepseek-ai/schemastery'
 
 /** Stable Cordis plugin name. */
-export const name = 'desktop-updates'
+export const name = 'tokens-dsh-version-updates'
 
 /** Native adapter required for network, tray, confirmation, and installer access. */
 export const inject = ['desktopRuntime']
@@ -306,7 +306,7 @@ export function apply(ctx, config) {
       if (inFlight !== undefined) pending.push(inFlight)
       await Promise.allSettled(pending)
     }
-  }, '@tokens/tokensharness-updates: polling and installer handoff')
+  }, '@tokens/dsh-version-updates: polling and installer handoff')
 }
 
 async function readLimitedBody(response) {

@@ -1,6 +1,6 @@
 # TokensHarness Updates
 
-`@tokens/tokensharness-updates` 是 TokensHarness 的独立 Cordis Host 插件。它只读取公开仓库 [`sobermh/tokens_TokensHarness_code`](https://github.com/sobermh/tokens_TokensHarness_code) 的 latest GitHub Release，不使用 npm 作为产品版本源。
+`@tokens/dsh-version-updates` 是 TokensHarness 的独立 Cordis Host 插件。它只读取公开仓库 [`sobermh/tokens_TokensHarness_code`](https://github.com/sobermh/tokens_TokensHarness_code) 的 latest GitHub Release，不使用 npm 作为产品版本源。
 
 插件通过 `desktopRuntime` 使用 TokensHarness 提供的原生托盘、网络、确认对话框和安装器交接能力。它负责定时检查、手工检查、版本比较和提示历史；Windows 与 macOS 的实际安装包下载及打开仍由 Desktop 原生适配器负责。
 

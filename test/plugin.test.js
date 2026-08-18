@@ -47,7 +47,7 @@ test('checks only the public TokensHarness latest Release', async () => {
 })
 
 test('registers one manual update tray command through desktopRuntime', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'tokensharness-updates-'))
+  const root = await mkdtemp(join(tmpdir(), 'dsh-version-updates-'))
   let tray
   let disposer
   const manualResults = []
