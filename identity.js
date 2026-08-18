@@ -16,7 +16,7 @@ export const PACKAGE_NAME = '@tokens/dsh-version-updates'
 export const PLUGIN_NAME = 'tokens-dsh-version-updates'
 
 /** 产品发布仓库：GitHub Release 版本源。 */
-export const GITHUB_OWNER = 'sobermh'
+export const GITHUB_OWNER = 'TokensAPI'
 export const GITHUB_REPO = 'tokens_TokensHarness_code'
 
 /** 由发布仓库派生的 latest Release 端点。 */
