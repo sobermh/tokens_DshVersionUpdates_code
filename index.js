@@ -270,6 +270,32 @@ export function apply(ctx, config) {
       })
     }
 
+    const showManualCheckResult = async (result) => {
+      const electron = await loadElectron()
+      if (electron === null) return adapter.showManualCheckResult(result)
+      if (result === null) {
+        await electron.dialog.showMessageBox({
+          type: 'warning',
+          title: 'Unable to Check for Updates',
+          message: `${PRODUCT_NAME} could not check for updates.`,
+          detail: 'Please try again later.',
+          buttons: ['OK'],
+          defaultId: 0,
+          noLink: true,
+        })
+        return
+      }
+      await electron.dialog.showMessageBox({
+        type: 'info',
+        title: `${PRODUCT_NAME} Is Up to Date`,
+        message: `No newer version of ${PRODUCT_NAME} is available.`,
+        detail: `Installed version: ${result.currentVersion}`,
+        buttons: ['OK'],
+        defaultId: 0,
+        noLink: true,
+      })
+    }
+
     /* ------------------- 确认下载与安装包移交 ------------------- */
     const startDownload = (version) => {
       if (downloadTask !== undefined) return downloadTask
@@ -339,7 +365,7 @@ export function apply(ctx, config) {
           await offerDownload(version, false)
           return
         }
-        await adapter.showManualCheckResult(result)
+        await showManualCheckResult(result)
       })().catch(() => undefined).finally(() => { manualTask = undefined })
       return manualTask
     }
