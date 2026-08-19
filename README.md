@@ -21,6 +21,34 @@
 
 后台定时轮询仅在已打包应用中启用（`isPackaged && config.enabled`），开发态永不联网。
 
+## 安装包的存放位置
+
+安装包默认落在应用数据目录的 `updates/<version>/` 下，Windows 上即
+`%APPDATA%\DSH Desktop\updates\<version>\`。要换位置，在档案的 `cordis.patch.yml`
+里给本插件加上 `downloadDirectory`：
+
+```yaml
+- id: tokens-version-updates
+  config:
+    downloadDirectory: D:\Downloads\TokensHarness
+```
+
+档案目录是 `~/.dsh/profiles/<profile>/`，桌面端默认档案为 `desktop`；改完重启应用生效。
+几点约定：
+
+- 只接受**绝对路径**，以及 `~`、`~/x` 这类家目录写法；
+- 相对路径（含 `./x`、`~user/x`）一律视为无效并回退到默认位置，因为它们的基准是
+  桌面进程的 cwd，不可预期；
+- 两种情形都再按版本号建子目录，所以不同版本的安装包不会互相覆盖。
+
+## 已下载安装包的复用
+
+开始下载前先看目标路径上是否已有同名文件：体积与 Release 声明一致、且重算
+SHA-256 与 Release 声明的摘要完全吻合时，直接复用并拉起安装器，不再发出任何
+下载请求。任一环节不满足（文件不在、体积不符、摘要不符、Release 未声明摘要）
+都照常重新下载并覆盖。没有摘要就不复用，避免把一个无法验证的旧文件当成安装包
+交给用户。
+
 验证：
 
 ```sh

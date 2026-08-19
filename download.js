@@ -2,7 +2,7 @@
 
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdir, open, rename, unlink } from 'node:fs/promises'
+import { mkdir, open, rename, stat, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 
 /* ====================================================================
@@ -35,6 +35,59 @@ export function selectInstallerAsset(assets, platform = process.platform, arch =
   const pattern = ASSET_PATTERNS[`${platform}:${arch}`]
   if (pattern === undefined) return null
   return assets.find(asset => pattern.test(asset.name)) ?? null
+}
+
+/* ====================================================================
+ * 已下载安装包的复用校验（导出）
+ * 目标文件已存在且 Release 声明了摘要时，重算一遍 SHA-256 而不是
+ * 重新下载整个安装包；摘要缺失、体积不符或校验失败都返回 false，
+ * 由调用方照常走网络。
+ * ==================================================================== */
+
+/**
+ * Verify one already-downloaded installer against its declared digest.
+ * @param {string} path Absolute path of the candidate installer.
+ * @param {import('./index.d.ts').ReleaseAsset} asset Release asset describing it.
+ * @returns {Promise<boolean>} True when the file is present and trustworthy.
+ */
+export async function verifyDownloadedInstaller(path, asset) {
+  // 摘要非法时不在此处失败关闭：交回下载路径，由 downloadInstaller 抛出唯一的诊断。
+  let declaredDigest
+  try {
+    declaredDigest = parseSha256Digest(asset.digest)
+  } catch {
+    return false
+  }
+  if (declaredDigest === null) return false
+
+  let stats
+  try {
+    stats = await stat(path)
+  } catch {
+    return false
+  }
+  if (!stats.isFile()) return false
+  if (typeof asset.size === 'number' && asset.size > 0 && stats.size !== asset.size) return false
+  if (stats.size === 0 || stats.size > MAX_INSTALLER_BYTES) return false
+
+  let handle
+  try {
+    handle = await open(path, 'r')
+    const hash = createHash('sha256')
+    const buffer = Buffer.allocUnsafe(1024 * 1024)
+    let position = 0
+    while (position < stats.size) {
+      const read = await handle.read(buffer, 0, buffer.byteLength, position)
+      if (read.bytesRead === 0) return false
+      position += read.bytesRead
+      hash.update(buffer.subarray(0, read.bytesRead))
+    }
+    return hash.digest('hex') === declaredDigest
+  } catch {
+    return false
+  } finally {
+    await handle?.close().catch(() => undefined)
+  }
 }
 
 /* ====================================================================

@@ -35,6 +35,8 @@ export interface Config {
   requestTimeoutMs: number
   /** HTTPS mirror prefix replacing `https://github.com` in asset URLs; empty uses GitHub directly. */
   downloadBaseURL: string
+  /** Absolute directory receiving `<version>/` installer subdirectories; empty uses the application data directory. */
+  downloadDirectory: string
   /** User-visible product name in dialogs and tray labels; defaults to identity.js. */
   productName: string
   /** GitHub owner of the release repository; defaults to identity.js. */
@@ -114,6 +116,13 @@ export function describeManualCheck(
   result: UpdateCheckResult | null,
   options: { productName: string, releasesPageURL: string },
 ): ManualCheckDialog
+
+/** Resolve the directory receiving one version's installer; empty, relative, or non-string configuration falls back beside the state file. */
+export function resolveDownloadDirectory(
+  configured: unknown,
+  statePath: string,
+  version: string,
+): string
 export function apply(ctx: UpdatePluginContext, config: Config): void
 
 export const MAX_INSTALLER_BYTES: number
@@ -130,3 +139,7 @@ export function downloadInstaller(options: {
   signal?: AbortSignal
 }): Promise<string>
 export function openInstaller(path: string, platform?: string): void
+export function verifyDownloadedInstaller(
+  path: string,
+  asset: ReleaseAsset,
+): Promise<boolean>

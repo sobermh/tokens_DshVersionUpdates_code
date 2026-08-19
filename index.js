@@ -1,12 +1,19 @@
 /** TokensHarness GitHub Release discovery and tray update plugin. */
 
 import { open } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { homedir } from 'node:os'
+import { dirname, isAbsolute, join } from 'node:path'
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import Schema from '@deepseek-ai/schemastery'
-import { downloadInstaller, openInstaller, selectInstallerAsset } from './download.js'
+import {
+  downloadInstaller,
+  openInstaller,
+  selectInstallerAsset,
+  verifyDownloadedInstaller,
+} from './download.js'
 import {
   DOWNLOAD_BASE_URL,
+  DOWNLOAD_DIRECTORY,
   GITHUB_OWNER,
   GITHUB_REPO,
   INITIAL_DELAY_MS,
@@ -20,7 +27,13 @@ import {
 } from './identity.js'
 
 export { RELEASE_ENDPOINT }
-export { selectInstallerAsset, downloadInstaller, openInstaller, MAX_INSTALLER_BYTES } from './download.js'
+export {
+  selectInstallerAsset,
+  downloadInstaller,
+  openInstaller,
+  verifyDownloadedInstaller,
+  MAX_INSTALLER_BYTES,
+} from './download.js'
 
 /* ====================================================================
  * 插件标识与配置
@@ -51,6 +64,7 @@ export const Config = Schema.object({
   intervalMs: Schema.number().step(1).min(1).max(MAX_TIMER_DELAY_MS).default(INTERVAL_MS),
   requestTimeoutMs: Schema.number().step(1).min(1).max(MAX_TIMER_DELAY_MS).default(REQUEST_TIMEOUT_MS),
   downloadBaseURL: Schema.string().default(DOWNLOAD_BASE_URL),
+  downloadDirectory: Schema.string().default(DOWNLOAD_DIRECTORY),
   productName: Schema.string().default(PRODUCT_NAME),
   githubOwner: Schema.string().default(GITHUB_OWNER),
   githubRepo: Schema.string().default(GITHUB_REPO),
@@ -188,6 +202,33 @@ export function describeManualCheck(result, options) {
     message: `No newer version of ${productName} is available.`,
     detail: `Installed version: ${result.currentVersion}`,
   }
+}
+
+/* ====================================================================
+ * 下载目录解析（导出）
+ * 把配置里的目录字符串归一化成安装包的落盘目录。只接受绝对路径
+ * 与 `~` 开头的家目录写法，其余一律回退到状态文件旁；两条分支
+ * 都再按版本号建子目录。抽成纯函数以便直接断言路径策略。
+ * ==================================================================== */
+
+/**
+ * Resolve the directory that receives one version's installer.
+ * @param {unknown} configured Configured directory; empty, relative, or non-string falls back.
+ * @param {string} statePath Update state file path, source of the default location.
+ * @param {string} version Stable version whose subdirectory is appended.
+ * @returns {string} Directory ending in the version segment.
+ */
+export function resolveDownloadDirectory(configured, statePath, version) {
+  const fallback = join(dirname(statePath), version)
+  if (typeof configured !== 'string') return fallback
+  const trimmed = configured.trim()
+  if (trimmed === '') return fallback
+  // `~` 与 `~/x` 展开到家目录；`~user` 这类形式不解释，按无效处理。
+  const expanded = trimmed === '~'
+    ? homedir()
+    : /^~[/\\]/u.test(trimmed) ? join(homedir(), trimmed.slice(2)) : trimmed
+  // 相对路径的基准取决于进程 cwd，桌面端不可预期，故一律回退到默认目录。
+  return isAbsolute(expanded) ? join(expanded, version) : fallback
 }
 
 /* ====================================================================
@@ -362,13 +403,18 @@ export function apply(ctx, config) {
         downloadingVersion = version
         refreshTray()
         try {
-          const path = await downloadInstaller({
-            asset,
-            url: rewriteDownloadURL(asset.url, config.downloadBaseURL),
-            request: adapter.request,
-            directory: join(dirname(adapter.statePath), version),
-            signal: controller.signal,
-          })
+          const directory = resolveDownloadDirectory(config.downloadDirectory, adapter.statePath, version)
+          const existing = join(directory, asset.name)
+          // 同名安装包已在磁盘且摘要吻合时复用，避免重复拉取整个安装包。
+          const path = await verifyDownloadedInstaller(existing, asset)
+            ? existing
+            : await downloadInstaller({
+              asset,
+              url: rewriteDownloadURL(asset.url, config.downloadBaseURL),
+              request: adapter.request,
+              directory,
+              signal: controller.signal,
+            })
           controller.signal.throwIfAborted()
           openInstaller(path)
           await announceReady(version, path)

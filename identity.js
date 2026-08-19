@@ -35,6 +35,14 @@ export const RELEASE_ENDPOINT =
  */
 export const DOWNLOAD_BASE_URL = ''
 
+/**
+ * 安装包下载目录：空串表示放在应用数据目录的 `updates/<version>/` 下
+ * （由 adapter.statePath 派生）。设为绝对路径时改用该目录，同样按版本
+ * 建子目录；支持 `~` 开头的家目录写法。相对路径视为无效并回退到默认。
+ * 可被 config.downloadDirectory 覆盖。
+ */
+export const DOWNLOAD_DIRECTORY = ''
+
 /* ====================================================================
  * 轮询节奏
  * 每项均为 Config 同名字段的默认值，用户可经 profile 补丁覆盖。

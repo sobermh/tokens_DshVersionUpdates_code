@@ -2,8 +2,9 @@
 
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { existsSync } from 'node:fs'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
@@ -16,8 +17,15 @@ import {
   compareSemVerVersions,
   describeManualCheck,
   parseSemVer,
+  resolveDownloadDirectory,
 } from '../index.js'
-import { MAX_INSTALLER_BYTES, downloadInstaller, openInstaller, selectInstallerAsset } from '../download.js'
+import {
+  MAX_INSTALLER_BYTES,
+  downloadInstaller,
+  openInstaller,
+  selectInstallerAsset,
+  verifyDownloadedInstaller,
+} from '../download.js'
 
 /* ============================ 测试夹具 ============================ */
 
@@ -1726,4 +1734,314 @@ test('138 the describeManualCheck contract stays a pure function of its inputs',
   const second = describeManualCheck(result, DIALOG_BRAND)
   assert.deepEqual(first, second)
   assert.deepEqual(Object.keys(first).sort(), ['detail', 'message', 'title', 'type'])
+})
+
+/* ============ 16. 已下载安装包的复用 ============ */
+
+/** 写出一个内容确定的安装包，返回其路径与配套的 asset 描述。 */
+async function seedInstaller(directory, name, payload) {
+  const path = join(directory, name)
+  await writeFile(path, payload)
+  return {
+    path,
+    asset: {
+      name,
+      url: `https://github.com/o/r/releases/download/v0.2.0/${name}`,
+      size: payload.byteLength,
+      digest: `sha256:${createHash('sha256').update(payload).digest('hex')}`,
+    },
+  }
+}
+
+test('139 verifyDownloadedInstaller accepts a file whose digest matches the release asset', async () => {
+  const root = await tempDir('verify-hit')
+  try {
+    const { path, asset } = await seedInstaller(root, 'a.exe', Buffer.from('installer-bytes'))
+    assert.equal(await verifyDownloadedInstaller(path, asset), true)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('140 verifyDownloadedInstaller hashes a file spanning several read buffers', async () => {
+  const root = await tempDir('verify-big')
+  try {
+    const payload = Buffer.alloc(3 * 1024 * 1024 + 7, 0x41)
+    const { path, asset } = await seedInstaller(root, 'big.exe', payload)
+    assert.equal(await verifyDownloadedInstaller(path, asset), true, 'chunked hashing must cover the whole file')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('141 verifyDownloadedInstaller accepts an uppercase digest from the release document', async () => {
+  const root = await tempDir('verify-case')
+  try {
+    const { path, asset } = await seedInstaller(root, 'c.exe', Buffer.from('installer-bytes'))
+    const upper = { ...asset, digest: `sha256:${asset.digest.slice('sha256:'.length).toUpperCase()}` }
+    assert.equal(await verifyDownloadedInstaller(path, upper), true)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('142 verifyDownloadedInstaller rejects a file whose bytes were tampered with', async () => {
+  const root = await tempDir('verify-tamper')
+  try {
+    const { path, asset } = await seedInstaller(root, 'd.exe', Buffer.from('installer-bytes'))
+    await writeFile(path, Buffer.from('tampered-bytes!'))
+    assert.equal(await verifyDownloadedInstaller(path, asset), false)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('143 verifyDownloadedInstaller rejects a size that disagrees with the release asset', async () => {
+  const root = await tempDir('verify-size')
+  try {
+    const { path, asset } = await seedInstaller(root, 'e.exe', Buffer.from('installer-bytes'))
+    assert.equal(await verifyDownloadedInstaller(path, { ...asset, size: asset.size + 1 }), false)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('144 verifyDownloadedInstaller reports a missing file instead of throwing', async () => {
+  const root = await tempDir('verify-gone')
+  try {
+    const asset = { name: 'f.exe', url: 'https://github.com/x', size: 4, digest: `sha256:${'a'.repeat(64)}` }
+    assert.equal(await verifyDownloadedInstaller(join(root, 'f.exe'), asset), false)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('145 verifyDownloadedInstaller rejects a directory standing where the installer belongs', async () => {
+  const root = await tempDir('verify-dir')
+  try {
+    const asset = { name: 'g.exe', url: 'https://github.com/x', size: 4, digest: `sha256:${'a'.repeat(64)}` }
+    assert.equal(await verifyDownloadedInstaller(root, asset), false)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('146 verifyDownloadedInstaller rejects an empty file', async () => {
+  const root = await tempDir('verify-empty')
+  try {
+    const { path, asset } = await seedInstaller(root, 'h.exe', Buffer.alloc(0))
+    assert.equal(await verifyDownloadedInstaller(path, asset), false)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('147 verifyDownloadedInstaller refuses to trust a release that declares no digest', async () => {
+  const root = await tempDir('verify-nodigest')
+  try {
+    const { path, asset } = await seedInstaller(root, 'i.exe', Buffer.from('installer-bytes'))
+    for (const digest of [null, undefined]) {
+      assert.equal(await verifyDownloadedInstaller(path, { ...asset, digest }), false, String(digest))
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('148 verifyDownloadedInstaller returns false rather than throwing on a malformed digest', async () => {
+  const root = await tempDir('verify-malformed')
+  try {
+    const { path, asset } = await seedInstaller(root, 'j.exe', Buffer.from('installer-bytes'))
+    for (const digest of ['sha256:zz', 'md5:abc', 'not-a-digest', `sha512:${'a'.repeat(64)}`, 42]) {
+      assert.equal(await verifyDownloadedInstaller(path, { ...asset, digest }), false, String(digest))
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('149 an installer already on disk is reused without any network download', {
+  skip: SUPPORTED_HOST ? false : 'unsupported host platform',
+}, async () => {
+  const root = await tempDir('reuse-hit')
+  try {
+    const payload = Buffer.from('already-downloaded-bytes')
+    const asset = downloadableRelease('0.2.0', payload)
+    await mkdir(join(root, '0.2.0'), { recursive: true })
+    await writeFile(join(root, '0.2.0', asset.name), payload)
+
+    let downloads = 0
+    const host = harness({
+      root,
+      confirm: true,
+      request: async (url) => {
+        if (url.endsWith('/releases/latest')) {
+          return release({
+            tag_name: 'v0.2.0',
+            assets: [{
+              name: asset.name,
+              browser_download_url: `https://github.com/o/r/releases/download/v0.2.0/${asset.name}`,
+              size: asset.size,
+              digest: asset.digest,
+            }],
+          })
+        }
+        downloads += 1
+        return new Response(Buffer.from('SHOULD-NEVER-BE-FETCHED'))
+      },
+    })
+    const { tray, dispose } = host.start()
+    await tray.invoke()
+    await dispose()
+    assert.equal(downloads, 0, 'a verified installer must be reused, never refetched')
+    assert.deepEqual(await readFile(join(root, '0.2.0', asset.name)), payload, 'the reused file must be left intact')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('150 a tampered installer on disk is refetched instead of being trusted', {
+  skip: SUPPORTED_HOST ? false : 'unsupported host platform',
+}, async () => {
+  const root = await tempDir('reuse-miss')
+  try {
+    const payload = Buffer.from('genuine-installer-bytes')
+    const asset = downloadableRelease('0.2.0', payload)
+    await mkdir(join(root, '0.2.0'), { recursive: true })
+    await writeFile(join(root, '0.2.0', asset.name), Buffer.from('tampered-installer-bytes'))
+
+    let downloads = 0
+    const host = harness({
+      root,
+      confirm: true,
+      request: async (url) => {
+        if (url.endsWith('/releases/latest')) {
+          return release({
+            tag_name: 'v0.2.0',
+            assets: [{
+              name: asset.name,
+              browser_download_url: `https://github.com/o/r/releases/download/v0.2.0/${asset.name}`,
+              size: asset.size,
+              digest: asset.digest,
+            }],
+          })
+        }
+        downloads += 1
+        return new Response(payload)
+      },
+    })
+    const { tray, dispose } = host.start()
+    await tray.invoke()
+    const settled = await waitForState(join(root, '0.2.0', asset.name), text => text === payload.toString('utf8'))
+    await dispose()
+    assert.equal(downloads, 1, 'a digest mismatch on disk must fall through to the network')
+    assert.equal(settled, payload.toString('utf8'), 'the tampered file must be replaced by the verified one')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+/* ============ 17. 安装包下载目录的配置 ============ */
+
+const STATE_PATH = join(tmpdir(), 'dvu-resolve', 'updates', 'state.json')
+const STATE_SIBLING = join(tmpdir(), 'dvu-resolve', 'updates', '0.2.0')
+const ABSOLUTE_TARGET = process.platform === 'win32' ? 'D:\\Installers' : '/srv/installers'
+
+test('151 resolveDownloadDirectory defaults to a versioned directory beside the state file', () => {
+  assert.equal(resolveDownloadDirectory('', STATE_PATH, '0.2.0'), STATE_SIBLING)
+})
+
+test('152 resolveDownloadDirectory appends the version to a configured absolute directory', () => {
+  assert.equal(resolveDownloadDirectory(ABSOLUTE_TARGET, STATE_PATH, '0.2.0'), join(ABSOLUTE_TARGET, '0.2.0'))
+})
+
+test('153 resolveDownloadDirectory expands a leading tilde to the home directory', () => {
+  assert.equal(resolveDownloadDirectory('~', STATE_PATH, '0.2.0'), join(homedir(), '0.2.0'))
+  assert.equal(resolveDownloadDirectory('~/Downloads', STATE_PATH, '0.2.0'), join(homedir(), 'Downloads', '0.2.0'))
+})
+
+test('154 resolveDownloadDirectory trims surrounding whitespace before deciding', () => {
+  assert.equal(resolveDownloadDirectory(`  ${ABSOLUTE_TARGET}  `, STATE_PATH, '0.2.0'), join(ABSOLUTE_TARGET, '0.2.0'))
+  assert.equal(resolveDownloadDirectory('   ', STATE_PATH, '0.2.0'), STATE_SIBLING)
+})
+
+test('155 resolveDownloadDirectory falls back for relative and unusable configuration', () => {
+  // 相对路径的基准是进程 cwd，桌面端不可预期，写到那里等于把安装包丢在未知位置。
+  for (const configured of ['./installers', 'installers', '../installers', '~user/x', undefined, null, 42, {}]) {
+    assert.equal(resolveDownloadDirectory(configured, STATE_PATH, '0.2.0'), STATE_SIBLING, String(configured))
+  }
+})
+
+test('156 a configured absolute downloadDirectory receives the installer', {
+  skip: SUPPORTED_HOST ? false : 'unsupported host platform',
+}, async () => {
+  const root = await tempDir('dir-abs')
+  const target = await tempDir('dir-target')
+  try {
+    const payload = Buffer.from('verified-installer-bytes')
+    const asset = downloadableRelease('0.2.0', payload)
+    const host = harness({
+      root,
+      confirm: true,
+      request: async (url) => url.endsWith('/releases/latest')
+        ? release({
+          tag_name: 'v0.2.0',
+          assets: [{
+            name: asset.name,
+            browser_download_url: `https://github.com/o/r/releases/download/v0.2.0/${asset.name}`,
+            size: asset.size,
+            digest: asset.digest,
+          }],
+        })
+        : new Response(payload),
+    })
+    const { tray, dispose } = host.start({ downloadDirectory: target })
+    await tray.invoke()
+    const settled = await waitForState(join(target, '0.2.0', asset.name), () => true)
+    await dispose()
+    assert.equal(settled, payload.toString('utf8'))
+    assert.deepEqual(await readdir(root), ['state.json'], 'nothing may land beside the state file')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+    await rm(target, { recursive: true, force: true })
+  }
+})
+
+test('157 a relative downloadDirectory writes to the default location, never the process cwd', {
+  skip: SUPPORTED_HOST ? false : 'unsupported host platform',
+}, async () => {
+  const root = await tempDir('dir-rel')
+  try {
+    const payload = Buffer.from('verified-installer-bytes')
+    const asset = downloadableRelease('0.2.0', payload)
+    const host = harness({
+      root,
+      confirm: true,
+      request: async (url) => url.endsWith('/releases/latest')
+        ? release({
+          tag_name: 'v0.2.0',
+          assets: [{
+            name: asset.name,
+            browser_download_url: `https://github.com/o/r/releases/download/v0.2.0/${asset.name}`,
+            size: asset.size,
+            digest: asset.digest,
+          }],
+        })
+        : new Response(payload),
+    })
+    const { tray, dispose } = host.start({ downloadDirectory: './installers' })
+    await tray.invoke()
+    const settled = await waitForState(join(root, '0.2.0', asset.name), () => true)
+    await dispose()
+    assert.equal(settled, payload.toString('utf8'))
+    assert.equal(existsSync(join(process.cwd(), 'installers', '0.2.0', asset.name)), false, 'the plugin must never write into its own cwd')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('158 Config exposes downloadDirectory and defaults it to the empty string', () => {
+  assert.equal(Config({}).downloadDirectory, '')
+  assert.equal(Config({ downloadDirectory: '/srv/installers' }).downloadDirectory, '/srv/installers')
+  assert.throws(() => Config({ downloadDirectory: 42 }))
 })
