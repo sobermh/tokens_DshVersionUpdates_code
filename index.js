@@ -152,6 +152,45 @@ export async function checkForStableUpdate(options) {
 }
 
 /* ====================================================================
+ * 手动检查结果文案（导出）
+ * 三种结果各对应一个弹窗规格：请求失败、有新版但本构建无法自动
+ * 下载、已是最新。抽成纯函数以便脱离 Electron 直接断言文案。
+ * ==================================================================== */
+
+/**
+ * Describe the dialog shown after one manual update check.
+ * @param {import('./index.d.ts').UpdateCheckResult | null} result Check outcome, or null on failure.
+ * @param {{ productName: string, releasesPageURL: string }} options Branding and manual download target.
+ * @returns {{ type: string, title: string, message: string, detail: string }} Dialog specification.
+ */
+export function describeManualCheck(result, options) {
+  const { productName, releasesPageURL } = options
+  if (result === null) {
+    return {
+      type: 'warning',
+      title: 'Unable to Check for Updates',
+      message: `${productName} could not check for updates.`,
+      detail: 'Please try again later.',
+    }
+  }
+  if (result.status === 'update-available') {
+    return {
+      type: 'info',
+      title: `${productName} Update Available`,
+      message: `${productName} ${result.latestVersion} is available.`,
+      detail: 'This build cannot install updates automatically. Download it manually:'
+        + `\n\n${releasesPageURL}`,
+    }
+  }
+  return {
+    type: 'info',
+    title: `${productName} Is Up to Date`,
+    message: `No newer version of ${productName} is available.`,
+    detail: `Installed version: ${result.currentVersion}`,
+  }
+}
+
+/* ====================================================================
  * 插件主体
  * 在一个 effect 作用域内组合全部运行态：提示状态持久化、去重的
  * 版本检查、确认后的下载与安装包移交、手动与后台两条触发路径、
@@ -167,6 +206,7 @@ export function apply(ctx, config) {
   const adapter = ctx.desktopRuntime.updates
   const productName = config.productName ?? PRODUCT_NAME
   const releaseEndpoint = `https://api.github.com/repos/${config.githubOwner ?? GITHUB_OWNER}/${config.githubRepo ?? GITHUB_REPO}/releases/latest`
+  const releasesPageURL = `https://github.com/${config.githubOwner ?? GITHUB_OWNER}/${config.githubRepo ?? GITHUB_REPO}/releases/latest`
   ctx.effect(() => {
     let disposed = false
     let checking = false
@@ -291,23 +331,8 @@ export function apply(ctx, config) {
     const showManualCheckResult = async (result) => {
       const electron = await loadElectron()
       if (electron === null) return adapter.showManualCheckResult(result)
-      if (result === null) {
-        await electron.dialog.showMessageBox({
-          type: 'warning',
-          title: 'Unable to Check for Updates',
-          message: `${productName} could not check for updates.`,
-          detail: 'Please try again later.',
-          buttons: ['OK'],
-          defaultId: 0,
-          noLink: true,
-        })
-        return
-      }
       await electron.dialog.showMessageBox({
-        type: 'info',
-        title: `${productName} Is Up to Date`,
-        message: `No newer version of ${productName} is available.`,
-        detail: `Installed version: ${result.currentVersion}`,
+        ...describeManualCheck(result, { productName, releasesPageURL }),
         buttons: ['OK'],
         defaultId: 0,
         noLink: true,

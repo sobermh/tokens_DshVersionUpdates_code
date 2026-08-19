@@ -104,6 +104,16 @@ export function checkForStableUpdate(options: {
   endpoint?: string
   userAgent?: string
 }): Promise<UpdateCheckResult | null>
+export interface ManualCheckDialog {
+  readonly type: 'info' | 'warning'
+  readonly title: string
+  readonly message: string
+  readonly detail: string
+}
+export function describeManualCheck(
+  result: UpdateCheckResult | null,
+  options: { productName: string, releasesPageURL: string },
+): ManualCheckDialog
 export function apply(ctx: UpdatePluginContext, config: Config): void
 
 export const MAX_INSTALLER_BYTES: number
