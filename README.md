@@ -23,9 +23,21 @@
 
 ## 安装包的存放位置
 
-安装包默认落在应用数据目录的 `updates/<version>/` 下，Windows 上即
-`%APPDATA%\DSH Desktop\updates\<version>\`。要换位置，在档案的 `cordis.patch.yml`
-里给本插件加上 `downloadDirectory`：
+安装包默认落在**以产品名命名**的应用数据目录下的 `updates/<version>/`：
+
+| 平台 | 默认位置 |
+| --- | --- |
+| Windows | `%APPDATA%\<产品名>\updates\<version>\` |
+| macOS | `~/Library/Application Support/<产品名>/updates/<version>/` |
+| 其余 | `$XDG_CONFIG_HOME/<产品名>/updates/<version>/`（未设时为 `~/.config`） |
+
+产品名取 `config.productName`（默认 `TokensHarness`），所以在 TokensHarness 上就是
+`%APPDATA%\TokensHarness\updates\<version>\`。注意它**不跟随宿主的 userData**：
+DSH Desktop 在 `main.ts` 里硬编码了 `app.setName('DSH Desktop')`，宿主自己的状态仍写在
+`%APPDATA%\DSH Desktop\` 下，安装包不再混在那里。产品名若无法作为单层目录名
+（含路径分隔符、盘符、`..` 等），则退回宿主状态文件旁，宁可混在一起也不拼出非法路径。
+
+要换位置，在档案的 `cordis.patch.yml` 里给本插件加上 `downloadDirectory`：
 
 ```yaml
 - id: tokens-version-updates

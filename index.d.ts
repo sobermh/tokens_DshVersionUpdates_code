@@ -35,7 +35,7 @@ export interface Config {
   requestTimeoutMs: number
   /** HTTPS mirror prefix replacing `https://github.com` in asset URLs; empty uses GitHub directly. */
   downloadBaseURL: string
-  /** Absolute directory receiving `<version>/` installer subdirectories; empty uses the application data directory. */
+  /** Absolute directory receiving `<version>/` installer subdirectories; empty uses `<productName>/updates/` in the platform application data directory. */
   downloadDirectory: string
   /** User-visible product name in dialogs and tray labels; defaults to identity.js. */
   productName: string
@@ -117,10 +117,22 @@ export function describeManualCheck(
   options: { productName: string, releasesPageURL: string },
 ): ManualCheckDialog
 
-/** Resolve the directory receiving one version's installer; empty, relative, or non-string configuration falls back beside the state file. */
+/** Resolve the application data directory holding one product's own state, or null when the name cannot be a directory. */
+export function productDataDirectory(
+  productName: string,
+  platform?: string,
+  env?: Record<string, string | undefined>,
+): string | null
+
+/** Resolve the directory receiving one version's installer; empty, relative, or non-string configuration uses the product data directory. */
 export function resolveDownloadDirectory(
   configured: unknown,
-  statePath: string,
+  context: {
+    productName: string
+    statePath: string
+    platform?: string
+    env?: Record<string, string | undefined>
+  },
   version: string,
 ): string
 export function apply(ctx: UpdatePluginContext, config: Config): void

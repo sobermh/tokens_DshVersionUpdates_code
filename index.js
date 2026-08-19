@@ -206,20 +206,54 @@ export function describeManualCheck(result, options) {
 
 /* ====================================================================
  * 下载目录解析（导出）
- * 把配置里的目录字符串归一化成安装包的落盘目录。只接受绝对路径
- * 与 `~` 开头的家目录写法，其余一律回退到状态文件旁；两条分支
- * 都再按版本号建子目录。抽成纯函数以便直接断言路径策略。
+ * 把配置里的目录字符串归一化成安装包的落盘目录。默认位置按
+ * 产品名放在平台应用数据目录下，而不跟随宿主的 userData；配置只接受
+ * 绝对路径与 `~` 开头的家目录写法。两条分支都再按版本号建子目录。
+ * 抽成纯函数（平台与环境变量可注入）以便直接断言路径策略。
  * ==================================================================== */
+
+/** 路径分隔符、盘符与上行符都不能出现在单层目录名里。 */
+const UNSAFE_SEGMENT = /[/\\:*?"<>|]|^\.+$/u
+
+/**
+ * Resolve the application data directory holding one product's own state.
+ * @param {string} productName Product name used as the directory name.
+ * @param {string} platform Node platform identifier.
+ * @param {Record<string, string | undefined>} env Environment supplying the platform data root.
+ * @returns {string | null} Product data directory, or null when the name is unusable as one.
+ */
+export function productDataDirectory(productName, platform = process.platform, env = process.env) {
+  if (typeof productName !== 'string') return null
+  const name = productName.trim()
+  if (name === '' || UNSAFE_SEGMENT.test(name)) return null
+  if (platform === 'win32') {
+    const roaming = typeof env.APPDATA === 'string' && env.APPDATA.trim() !== ''
+      ? env.APPDATA
+      : join(homedir(), 'AppData', 'Roaming')
+    return join(roaming, name)
+  }
+  if (platform === 'darwin') return join(homedir(), 'Library', 'Application Support', name)
+  // Linux 等其余平台遵循 XDG，与 Electron 的 userData 约定一致。
+  const configHome = typeof env.XDG_CONFIG_HOME === 'string' && env.XDG_CONFIG_HOME.trim() !== ''
+    ? env.XDG_CONFIG_HOME
+    : join(homedir(), '.config')
+  return join(configHome, name)
+}
 
 /**
  * Resolve the directory that receives one version's installer.
  * @param {unknown} configured Configured directory; empty, relative, or non-string falls back.
- * @param {string} statePath Update state file path, source of the default location.
+ * @param {{ productName: string, statePath: string, platform?: string, env?: Record<string, string | undefined> }} context Default-location inputs.
  * @param {string} version Stable version whose subdirectory is appended.
  * @returns {string} Directory ending in the version segment.
  */
-export function resolveDownloadDirectory(configured, statePath, version) {
-  const fallback = join(dirname(statePath), version)
+export function resolveDownloadDirectory(configured, context, version) {
+  const { productName, statePath, platform = process.platform, env = process.env } = context
+  const productRoot = productDataDirectory(productName, platform, env)
+  // 产品名不能当目录名时，退回到宿主状态文件旁，宁可混在一起也不拼出非法路径。
+  const fallback = productRoot === null
+    ? join(dirname(statePath), version)
+    : join(productRoot, 'updates', version)
   if (typeof configured !== 'string') return fallback
   const trimmed = configured.trim()
   if (trimmed === '') return fallback
@@ -403,7 +437,11 @@ export function apply(ctx, config) {
         downloadingVersion = version
         refreshTray()
         try {
-          const directory = resolveDownloadDirectory(config.downloadDirectory, adapter.statePath, version)
+          const directory = resolveDownloadDirectory(
+            config.downloadDirectory,
+            { productName, statePath: adapter.statePath },
+            version,
+          )
           const existing = join(directory, asset.name)
           // 同名安装包已在磁盘且摘要吻合时复用，避免重复拉取整个安装包。
           const path = await verifyDownloadedInstaller(existing, asset)

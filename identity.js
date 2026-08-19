@@ -36,10 +36,11 @@ export const RELEASE_ENDPOINT =
 export const DOWNLOAD_BASE_URL = ''
 
 /**
- * 安装包下载目录：空串表示放在应用数据目录的 `updates/<version>/` 下
- * （由 adapter.statePath 派生）。设为绝对路径时改用该目录，同样按版本
- * 建子目录；支持 `~` 开头的家目录写法。相对路径视为无效并回退到默认。
- * 可被 config.downloadDirectory 覆盖。
+ * 安装包下载目录：空串表示用默认位置——按产品名放在平台应用数据
+ * 目录下的 `<PRODUCT_NAME>/updates/<version>/`（Windows 为 %APPDATA%，macOS 为
+ * ~/Library/Application Support，其余为 $XDG_CONFIG_HOME）。设为绝对路径时改用
+ * 该目录，同样按版本建子目录；支持 `~` 开头的家目录写法。相对路径视为
+ * 无效并回退到默认。可被 config.downloadDirectory 覆盖。
  */
 export const DOWNLOAD_DIRECTORY = ''
 

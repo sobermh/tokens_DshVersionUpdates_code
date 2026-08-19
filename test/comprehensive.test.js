@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import test from 'node:test'
 
 import {
@@ -17,6 +17,7 @@ import {
   compareSemVerVersions,
   describeManualCheck,
   parseSemVer,
+  productDataDirectory,
   resolveDownloadDirectory,
 } from '../index.js'
 import {
@@ -98,7 +99,9 @@ function harness(options = {}) {
     registration,
     adapter,
     start(config = {}) {
-      apply(ctx, Config({ enabled: false, ...config }))
+      // 默认下载目录钉在本次临时目录：真实默认位置在应用数据目录下，
+      // 测试绝不能往那里写。关心默认位置的用例自行覆盖这个字段。
+      apply(ctx, Config({ enabled: false, downloadDirectory: options.root, ...config }))
       return { tray, dispose: () => disposer() }
     },
   }
@@ -1941,38 +1944,109 @@ test('150 a tampered installer on disk is refetched instead of being trusted', {
   }
 })
 
-/* ============ 17. 安装包下载目录的配置 ============ */
+/* ============ 17. 安装包下载目录的默认位置与配置 ============ */
 
-const STATE_PATH = join(tmpdir(), 'dvu-resolve', 'updates', 'state.json')
-const STATE_SIBLING = join(tmpdir(), 'dvu-resolve', 'updates', '0.2.0')
+const STATE_PATH = join(tmpdir(), 'dvu-resolve', 'DSH Desktop', 'updates', 'state.json')
+const STATE_SIBLING = join(tmpdir(), 'dvu-resolve', 'DSH Desktop', 'updates', '0.2.0')
 const ABSOLUTE_TARGET = process.platform === 'win32' ? 'D:\\Installers' : '/srv/installers'
+const WIN_ENV = { APPDATA: join('C:', 'Users', 'tester', 'AppData', 'Roaming') }
 
-test('151 resolveDownloadDirectory defaults to a versioned directory beside the state file', () => {
-  assert.equal(resolveDownloadDirectory('', STATE_PATH, '0.2.0'), STATE_SIBLING)
+/** 解析上下文：默认走 Windows 分支，个别用例覆盖 platform / env / productName。 */
+function context(overrides = {}) {
+  return { productName: 'TokensHarness', statePath: STATE_PATH, platform: 'win32', env: WIN_ENV, ...overrides }
+}
+
+test('151 productDataDirectory places Windows state under the roaming application data directory', () => {
+  assert.equal(productDataDirectory('TokensHarness', 'win32', WIN_ENV), join(WIN_ENV.APPDATA, 'TokensHarness'))
 })
 
-test('152 resolveDownloadDirectory appends the version to a configured absolute directory', () => {
-  assert.equal(resolveDownloadDirectory(ABSOLUTE_TARGET, STATE_PATH, '0.2.0'), join(ABSOLUTE_TARGET, '0.2.0'))
-})
-
-test('153 resolveDownloadDirectory expands a leading tilde to the home directory', () => {
-  assert.equal(resolveDownloadDirectory('~', STATE_PATH, '0.2.0'), join(homedir(), '0.2.0'))
-  assert.equal(resolveDownloadDirectory('~/Downloads', STATE_PATH, '0.2.0'), join(homedir(), 'Downloads', '0.2.0'))
-})
-
-test('154 resolveDownloadDirectory trims surrounding whitespace before deciding', () => {
-  assert.equal(resolveDownloadDirectory(`  ${ABSOLUTE_TARGET}  `, STATE_PATH, '0.2.0'), join(ABSOLUTE_TARGET, '0.2.0'))
-  assert.equal(resolveDownloadDirectory('   ', STATE_PATH, '0.2.0'), STATE_SIBLING)
-})
-
-test('155 resolveDownloadDirectory falls back for relative and unusable configuration', () => {
-  // 相对路径的基准是进程 cwd，桌面端不可预期，写到那里等于把安装包丢在未知位置。
-  for (const configured of ['./installers', 'installers', '../installers', '~user/x', undefined, null, 42, {}]) {
-    assert.equal(resolveDownloadDirectory(configured, STATE_PATH, '0.2.0'), STATE_SIBLING, String(configured))
+test('152 productDataDirectory falls back to the standard roaming path when APPDATA is unusable', () => {
+  const expected = join(homedir(), 'AppData', 'Roaming', 'TokensHarness')
+  for (const env of [{}, { APPDATA: '' }, { APPDATA: '   ' }, { APPDATA: 42 }]) {
+    assert.equal(productDataDirectory('TokensHarness', 'win32', env), expected, JSON.stringify(env))
   }
 })
 
-test('156 a configured absolute downloadDirectory receives the installer', {
+test('153 productDataDirectory follows the macOS and XDG conventions on other platforms', () => {
+  assert.equal(
+    productDataDirectory('TokensHarness', 'darwin', {}),
+    join(homedir(), 'Library', 'Application Support', 'TokensHarness'),
+  )
+  assert.equal(productDataDirectory('TokensHarness', 'linux', {}), join(homedir(), '.config', 'TokensHarness'))
+  assert.equal(
+    productDataDirectory('TokensHarness', 'linux', { XDG_CONFIG_HOME: '/xdg' }),
+    join('/xdg', 'TokensHarness'),
+  )
+})
+
+test('154 productDataDirectory refuses a product name that cannot be one directory segment', () => {
+  // 产品名来自配置，可能被写成任意字符串；它绝不能越出应用数据目录。
+  for (const name of ['a/b', 'a\\b', 'C:', 'a:b', 'a*b', 'a?b', 'a"b', 'a<b', 'a>b', 'a|b', '.', '..', '...', '', '   ', 42, null, undefined]) {
+    assert.equal(productDataDirectory(name, 'win32', WIN_ENV), null, String(name))
+  }
+})
+
+test('155 resolveDownloadDirectory defaults to the product application data directory', () => {
+  assert.equal(
+    resolveDownloadDirectory('', context(), '0.2.0'),
+    join(WIN_ENV.APPDATA, 'TokensHarness', 'updates', '0.2.0'),
+  )
+})
+
+test('156 the default location follows the product name rather than the host application', () => {
+  // 宿主的 statePath 仍指向 DSH Desktop，默认位置必须不再跟随它。
+  const resolved = resolveDownloadDirectory('', context(), '0.2.0')
+  assert.ok(!resolved.includes('DSH Desktop'), `installers must leave the host directory: ${resolved}`)
+  assert.equal(
+    resolveDownloadDirectory('', context({ productName: 'Other Brand' }), '0.2.0'),
+    join(WIN_ENV.APPDATA, 'Other Brand', 'updates', '0.2.0'),
+  )
+})
+
+test('157 resolveDownloadDirectory falls back beside the state file when the product name is unusable', () => {
+  for (const productName of ['..', 'a/b', '', 42]) {
+    assert.equal(resolveDownloadDirectory('', context({ productName }), '0.2.0'), STATE_SIBLING, String(productName))
+  }
+})
+
+test('158 resolveDownloadDirectory appends the version to a configured absolute directory', () => {
+  assert.equal(resolveDownloadDirectory(ABSOLUTE_TARGET, context(), '0.2.0'), join(ABSOLUTE_TARGET, '0.2.0'))
+})
+
+test('159 resolveDownloadDirectory expands a leading tilde to the home directory', () => {
+  assert.equal(resolveDownloadDirectory('~', context(), '0.2.0'), join(homedir(), '0.2.0'))
+  assert.equal(resolveDownloadDirectory('~/Downloads', context(), '0.2.0'), join(homedir(), 'Downloads', '0.2.0'))
+})
+
+test('160 resolveDownloadDirectory trims surrounding whitespace before deciding', () => {
+  const target = join(ABSOLUTE_TARGET, '0.2.0')
+  assert.equal(resolveDownloadDirectory(`  ${ABSOLUTE_TARGET}  `, context(), '0.2.0'), target)
+  assert.equal(
+    resolveDownloadDirectory('   ', context(), '0.2.0'),
+    join(WIN_ENV.APPDATA, 'TokensHarness', 'updates', '0.2.0'),
+  )
+})
+
+test('161 resolveDownloadDirectory falls back for relative and unusable configuration', () => {
+  const fallback = join(WIN_ENV.APPDATA, 'TokensHarness', 'updates', '0.2.0')
+  // 相对路径的基准是进程 cwd，桌面端不可预期，写到那里等于把安装包丢在未知位置。
+  for (const configured of ['./installers', 'installers', '../installers', '~user/x', undefined, null, 42, {}]) {
+    assert.equal(resolveDownloadDirectory(configured, context(), '0.2.0'), fallback, String(configured))
+  }
+})
+
+test('162 every resolved directory ends in the version so releases cannot overwrite each other', () => {
+  const cases = ['', ABSOLUTE_TARGET, '~', './relative', '   ']
+  for (const configured of cases) {
+    const first = resolveDownloadDirectory(configured, context(), '0.2.0')
+    const second = resolveDownloadDirectory(configured, context(), '0.3.0')
+    assert.notEqual(first, second, String(configured))
+    assert.ok(first.endsWith(`${sep}0.2.0`), first)
+    assert.ok(second.endsWith(`${sep}0.3.0`), second)
+  }
+})
+
+test('163 a configured absolute downloadDirectory receives the installer', {
   skip: SUPPORTED_HOST ? false : 'unsupported host platform',
 }, async () => {
   const root = await tempDir('dir-abs')
@@ -2007,10 +2081,13 @@ test('156 a configured absolute downloadDirectory receives the installer', {
   }
 })
 
-test('157 a relative downloadDirectory writes to the default location, never the process cwd', {
+test('164 a relative downloadDirectory writes to the default location, never the process cwd', {
   skip: SUPPORTED_HOST ? false : 'unsupported host platform',
 }, async () => {
   const root = await tempDir('dir-rel')
+  // 将默认位置引到一个专用产品名下，以便断言后清理干净。
+  const productName = 'DvuRelativeFallbackProbe'
+  const productRoot = productDataDirectory(productName)
   try {
     const payload = Buffer.from('verified-installer-bytes')
     const asset = downloadableRelease('0.2.0', payload)
@@ -2029,18 +2106,19 @@ test('157 a relative downloadDirectory writes to the default location, never the
         })
         : new Response(payload),
     })
-    const { tray, dispose } = host.start({ downloadDirectory: './installers' })
+    const { tray, dispose } = host.start({ productName, downloadDirectory: './installers' })
     await tray.invoke()
-    const settled = await waitForState(join(root, '0.2.0', asset.name), () => true)
+    const settled = await waitForState(join(productRoot, 'updates', '0.2.0', asset.name), () => true)
     await dispose()
     assert.equal(settled, payload.toString('utf8'))
-    assert.equal(existsSync(join(process.cwd(), 'installers', '0.2.0', asset.name)), false, 'the plugin must never write into its own cwd')
+    assert.equal(existsSync(join(process.cwd(), 'installers')), false, 'the plugin must never write into its own cwd')
   } finally {
     await rm(root, { recursive: true, force: true })
+    await rm(productRoot, { recursive: true, force: true })
   }
 })
 
-test('158 Config exposes downloadDirectory and defaults it to the empty string', () => {
+test('165 Config exposes downloadDirectory and defaults it to the empty string', () => {
   assert.equal(Config({}).downloadDirectory, '')
   assert.equal(Config({ downloadDirectory: '/srv/installers' }).downloadDirectory, '/srv/installers')
   assert.throws(() => Config({ downloadDirectory: 42 }))
