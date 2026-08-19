@@ -113,7 +113,7 @@ function UpdateAction({ wide, readStatus, download }: UpdateActionProps) {
             className={`tokensVersionUpdateIcon${progress === undefined && downloading ? ' tokensVersionUpdateIndeterminate' : ''}`}
             style={ringStyle}
           >
-            <IconDownloadOutline16 size={wide ? 16 : 18} />
+            <IconDownloadOutline16 size={wide ? 14 : 18} />
           </span>
         </button>
       </Tooltip>

@@ -60,11 +60,11 @@ var STYLES = `
 }
 .tokensVersionUpdateWide .tokensVersionUpdateButton {
   position: absolute;
-  top: 7px;
+  top: 9px;
   right: 0;
-  gap: 8px;
+  gap: 6px;
   width: auto;
-  height: 28px;
+  height: 24px;
   pointer-events: auto;
 }
 .tokensVersionUpdateWide .tokensVersionUpdateButton:hover { background: transparent; }
@@ -85,6 +85,10 @@ var STYLES = `
   border-radius: 50%;
   background: var(--dsw-alias-state-business-primary);
   color: var(--dsw-alias-label-primary-foreground);
+}
+.tokensVersionUpdateWide .tokensVersionUpdateIcon {
+  width: 22px;
+  height: 22px;
 }
 .tokensVersionUpdateButton[data-downloading] .tokensVersionUpdateIcon {
   background: conic-gradient(
@@ -199,7 +203,7 @@ function UpdateAction({ wide, readStatus, download }) {
           {
             className: `tokensVersionUpdateIcon${progress === void 0 && downloading ? " tokensVersionUpdateIndeterminate" : ""}`,
             style: ringStyle,
-            children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_dsh_client_ui_primitives.IconDownloadOutline16, { size: wide ? 16 : 18 })
+            children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_dsh_client_ui_primitives.IconDownloadOutline16, { size: wide ? 14 : 18 })
           }
         )
       ]

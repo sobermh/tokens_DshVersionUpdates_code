@@ -25,11 +25,11 @@ const STYLES = `
 }
 .tokensVersionUpdateWide .tokensVersionUpdateButton {
   position: absolute;
-  top: 7px;
+  top: 9px;
   right: 0;
-  gap: 8px;
+  gap: 6px;
   width: auto;
-  height: 28px;
+  height: 24px;
   pointer-events: auto;
 }
 .tokensVersionUpdateWide .tokensVersionUpdateButton:hover { background: transparent; }
@@ -50,6 +50,10 @@ const STYLES = `
   border-radius: 50%;
   background: var(--dsw-alias-state-business-primary);
   color: var(--dsw-alias-label-primary-foreground);
+}
+.tokensVersionUpdateWide .tokensVersionUpdateIcon {
+  width: 22px;
+  height: 22px;
 }
 .tokensVersionUpdateButton[data-downloading] .tokensVersionUpdateIcon {
   background: conic-gradient(
