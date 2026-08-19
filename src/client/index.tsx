@@ -91,7 +91,7 @@ function UpdateAction({ wide, readStatus, download }: UpdateActionProps) {
 
   return (
     <div className={`tokensVersionUpdateRoot${wide ? ' tokensVersionUpdateWide' : ''}`}>
-      <Tooltip label={tooltip} side="right" delayMs={400} disabled={wide}>
+      <Tooltip label={tooltip} side={wide ? 'top' : 'right'} delayMs={400}>
         <button
           type="button"
           className="tokensVersionUpdateButton"
@@ -108,18 +108,13 @@ function UpdateAction({ wide, readStatus, download }: UpdateActionProps) {
             })
           }}
         >
+          {wide && <span className="tokensVersionUpdateVersion">{status.version}</span>}
           <span
             className={`tokensVersionUpdateIcon${progress === undefined && downloading ? ' tokensVersionUpdateIndeterminate' : ''}`}
             style={ringStyle}
           >
             <IconDownloadOutline16 size={wide ? 16 : 18} />
           </span>
-          {wide && <span className="tokensVersionUpdateLabel">{starting && !downloading ? progressLabel : label}</span>}
-          {wide && downloading && (
-            <span className="tokensVersionUpdateTrack" aria-hidden>
-              <span style={{ width: `${progress ?? 12}%` }} />
-            </span>
-          )}
         </button>
       </Tooltip>
     </div>

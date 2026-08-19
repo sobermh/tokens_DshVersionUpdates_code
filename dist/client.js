@@ -52,15 +52,27 @@ var STYLES = `
 .tokensVersionUpdateButton:hover { background: var(--dsw-alias-interactive-bg-hover); }
 .tokensVersionUpdateButton:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
 .tokensVersionUpdateButton:disabled { cursor: default; opacity: 1; }
+.tokensVersionUpdateWide {
+  position: relative;
+  z-index: 2;
+  height: 0;
+  pointer-events: none;
+}
 .tokensVersionUpdateWide .tokensVersionUpdateButton {
-  gap: 3px;
-  width: calc(100% + 8px);
-  height: 34px;
-  margin: 0 -4px;
-  padding: 4px 2px 4px 5px;
-  box-sizing: border-box;
-  border-radius: 12px;
-  overflow: hidden;
+  position: absolute;
+  top: 7px;
+  right: 0;
+  gap: 8px;
+  width: auto;
+  height: 28px;
+  pointer-events: auto;
+}
+.tokensVersionUpdateWide .tokensVersionUpdateButton:hover { background: transparent; }
+.tokensVersionUpdateVersion {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 14px;
+  line-height: 22px;
+  white-space: nowrap;
 }
 .tokensVersionUpdateIcon {
   position: relative;
@@ -92,35 +104,9 @@ var STYLES = `
   color: var(--dsw-alias-state-business-primary);
 }
 .tokensVersionUpdateIndeterminate { animation: tokens-version-update-spin 900ms linear infinite; }
-.tokensVersionUpdateLabel {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--dsw-alias-label-primary);
-  font-size: 14px;
-  line-height: 22px;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.tokensVersionUpdateTrack {
-  position: absolute;
-  right: 2px;
-  bottom: 0;
-  left: 5px;
-  height: 2px;
-  overflow: hidden;
-  border-radius: 1px;
-  background: var(--dsw-alias-border-l2);
-}
-.tokensVersionUpdateTrack > span {
-  display: block;
-  height: 100%;
-  background: var(--dsw-alias-state-business-primary);
-  transition: width 180ms linear;
-}
 @keyframes tokens-version-update-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
   .tokensVersionUpdateIndeterminate { animation: none; }
-  .tokensVersionUpdateTrack > span { transition: none; }
 }
 `;
 function installStyles() {
@@ -189,7 +175,7 @@ function UpdateAction({ wide, readStatus, download }) {
   const ringStyle = {
     "--tokens-update-progress": `${progress ?? 0}%`
   };
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: `tokensVersionUpdateRoot${wide ? " tokensVersionUpdateWide" : ""}`, children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_dsh_client_ui_primitives.Tooltip, { label: tooltip, side: "right", delayMs: 400, disabled: wide, children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: `tokensVersionUpdateRoot${wide ? " tokensVersionUpdateWide" : ""}`, children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_dsh_client_ui_primitives.Tooltip, { label: tooltip, side: wide ? "top" : "right", delayMs: 400, children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
     "button",
     {
       type: "button",
@@ -207,6 +193,7 @@ function UpdateAction({ wide, readStatus, download }) {
         });
       },
       children: [
+        wide && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "tokensVersionUpdateVersion", children: status.version }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
           "span",
           {
@@ -214,9 +201,7 @@ function UpdateAction({ wide, readStatus, download }) {
             style: ringStyle,
             children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_dsh_client_ui_primitives.IconDownloadOutline16, { size: wide ? 16 : 18 })
           }
-        ),
-        wide && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "tokensVersionUpdateLabel", children: starting && !downloading ? progressLabel : label }),
-        wide && downloading && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "tokensVersionUpdateTrack", "aria-hidden": true, children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: { width: `${progress ?? 12}%` } }) })
+        )
       ]
     }
   ) }) });
