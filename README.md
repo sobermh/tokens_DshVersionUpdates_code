@@ -10,6 +10,17 @@
 - `TokensHarness-<version>-macos-arm64-installer.dmg`
 - `TokensHarness-<version>-macos-amd64-installer.dmg`
 
+## 自动下载的适用范围
+
+原生适配器只在**已打包**的 Windows / macOS 应用里开放自动下载（`isPackaged && (win32 || darwin)`）。在开发态 Electron、以及打包后的 Linux 上：
+
+- 托盘的「Check for Updates…」照常发起检查；
+- 检查到新版本时，弹窗会明确告知本构建无法自动安装，并给出手动下载地址
+  `https://github.com/<owner>/<repo>/releases/latest`；
+- 不会出现确认下载弹窗，也不会写入安装包。
+
+后台定时轮询仅在已打包应用中启用（`isPackaged && config.enabled`），开发态永不联网。
+
 验证：
 
 ```sh
