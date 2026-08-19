@@ -39,7 +39,7 @@ var STYLES = `
   position: relative;
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 0;
   width: 36px;
   height: 36px;
   padding: 0;
@@ -53,9 +53,13 @@ var STYLES = `
 .tokensVersionUpdateButton:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
 .tokensVersionUpdateButton:disabled { cursor: default; opacity: 1; }
 .tokensVersionUpdateWide .tokensVersionUpdateButton {
-  width: 100%;
-  padding: 0 10px;
-  border-radius: 8px;
+  gap: 3px;
+  width: calc(100% + 8px);
+  height: 34px;
+  margin: 0 -4px;
+  padding: 4px 2px 4px 5px;
+  box-sizing: border-box;
+  border-radius: 12px;
   overflow: hidden;
 }
 .tokensVersionUpdateIcon {
@@ -93,15 +97,15 @@ var STYLES = `
   overflow: hidden;
   color: var(--dsw-alias-label-primary);
   font-size: 14px;
-  line-height: 20px;
+  line-height: 22px;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 .tokensVersionUpdateTrack {
   position: absolute;
-  right: 10px;
-  bottom: 2px;
-  left: 10px;
+  right: 2px;
+  bottom: 0;
+  left: 5px;
   height: 2px;
   overflow: hidden;
   border-radius: 1px;
