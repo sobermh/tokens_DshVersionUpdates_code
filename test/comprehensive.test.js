@@ -914,7 +914,7 @@ test('92 tray shows the idle label before any check', async () => {
   try {
     const host = harness({ root })
     const { tray, dispose } = host.start()
-    assert.equal(tray.label(), 'Check for Updates…')
+    assert.equal(tray.label(), 'Check Updates…')
     await dispose()
   } finally {
     await rm(root, { recursive: true, force: true })
@@ -945,7 +945,7 @@ test('94 tray shows the checking label while a request is in flight', async () =
     assert.equal(tray.label(), 'Checking for Updates…')
     release_()
     await pending
-    assert.equal(tray.label(), 'Check for Updates…')
+    assert.equal(tray.label(), 'Check Updates…')
     await dispose()
   } finally {
     await rm(root, { recursive: true, force: true })
@@ -1019,7 +1019,7 @@ test('99 manual check does not prompt when the adapter cannot download', async (
     const { tray, dispose } = host.start()
     await tray.invoke()
     assert.deepEqual(host.log.confirmed, [])
-    assert.equal(tray.label(), 'Check for Updates…')
+    assert.equal(tray.label(), 'Check Updates…')
     await dispose()
   } finally {
     await rm(root, { recursive: true, force: true })

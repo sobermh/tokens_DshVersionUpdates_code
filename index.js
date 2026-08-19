@@ -522,7 +522,7 @@ export function apply(ctx, config) {
       order: 10,
       label: () => downloadingVersion === undefined
         ? availableVersion === undefined
-          ? checking ? 'Checking for Updates…' : 'Check for Updates…'
+          ? checking ? 'Checking for Updates…' : 'Check Updates…'
           : `${productName} ${availableVersion} Available`
         : `Downloading ${productName} ${downloadingVersion}…`,
       invoke: runManualCheck,

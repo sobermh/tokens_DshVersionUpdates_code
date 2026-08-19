@@ -77,7 +77,7 @@ test('registers one manual update tray command through desktopRuntime', async ()
 
   try {
     apply(ctx, Config({ enabled: false }))
-    assert.equal(tray.label(), 'Check for Updates…')
+    assert.equal(tray.label(), 'Check Updates…')
     await tray.invoke()
     assert.deepEqual(manualResults, [{
       status: 'up-to-date',

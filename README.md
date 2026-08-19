@@ -14,7 +14,7 @@
 
 原生适配器只在**已打包**的 Windows / macOS 应用里开放自动下载（`isPackaged && (win32 || darwin)`）。在开发态 Electron、以及打包后的 Linux 上：
 
-- 托盘的「Check for Updates…」照常发起检查；
+- 托盘的「Check Updates…」照常发起检查；
 - 检查到新版本时，弹窗会明确告知本构建无法自动安装，并给出手动下载地址
   `https://github.com/<owner>/<repo>/releases/latest`；
 - 不会出现确认下载弹窗，也不会写入安装包。
