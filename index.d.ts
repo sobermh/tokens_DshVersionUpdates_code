@@ -85,6 +85,20 @@ export interface UpdateDesktopRuntime {
 /** Minimal Cordis-compatible Host context required by this plugin. */
 export interface UpdatePluginContext {
   readonly desktopRuntime: UpdateDesktopRuntime
+  inject?(
+    services: readonly ['connection'],
+    apply: (ctx: UpdatePluginContext & {
+      readonly connection: {
+        readonly rpc: {
+          handle(
+            channel: string,
+            handler: (endpoint: string, payload: unknown) => Promise<unknown>,
+            options: { authority: 'trusted-host' },
+          ): () => void
+        }
+      }
+    }) => void,
+  ): void
   effect(
     execute: () => () => void | Promise<void>,
     label?: string,
@@ -149,6 +163,7 @@ export function downloadInstaller(options: {
   request: UpdateRequest
   directory: string
   signal?: AbortSignal
+  onProgress?: (progress: { downloadedBytes: number; totalBytes: number }) => void
 }): Promise<string>
 export function openInstaller(path: string, platform?: string): void
 export function verifyDownloadedInstaller(

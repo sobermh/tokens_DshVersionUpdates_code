@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join } from 'node:path'
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import Schema from '@deepseek-ai/schemastery'
 import {
+  MAX_INSTALLER_BYTES,
   downloadInstaller,
   openInstaller,
   selectInstallerAsset,
@@ -53,6 +54,7 @@ export const MAX_VERSION_RESPONSE_BYTES = 256 * 1024
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 const MAX_STATE_BYTES = 4 * 1024
 const EMPTY_STATE = { version: 2 }
+const UPDATE_RPC_CHANNEL = '/tokens-version-updates'
 const SEMVER_PATTERN =
   /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/u
 
@@ -282,6 +284,8 @@ export function apply(ctx, config) {
   const productName = config.productName ?? PRODUCT_NAME
   const releaseEndpoint = `https://api.github.com/repos/${config.githubOwner ?? GITHUB_OWNER}/${config.githubRepo ?? GITHUB_REPO}/releases/latest`
   const releasesPageURL = `https://github.com/${config.githubOwner ?? GITHUB_OWNER}/${config.githubRepo ?? GITHUB_REPO}/releases/latest`
+  let readClientStatus = () => ({ phase: 'idle', productName })
+  let requestClientDownload = async () => false
   ctx.effect(() => {
     let disposed = false
     let checking = false
@@ -296,7 +300,27 @@ export function apply(ctx, config) {
     let inFlight
     let manualTask
     let downloadTask
+    let autoPromptedVersion
+    let downloadedBytes = 0
+    let downloadTotalBytes = 0
     let refreshTray = () => {}
+
+    const clientStatus = () => {
+      if (downloadingVersion !== undefined) {
+        return {
+          phase: 'downloading',
+          productName,
+          version: downloadingVersion,
+          downloadedBytes,
+          totalBytes: downloadTotalBytes,
+        }
+      }
+      if (availableVersion !== undefined) {
+        return { phase: 'available', productName, version: availableVersion }
+      }
+      return { phase: checking ? 'checking' : 'idle', productName }
+    }
+    readClientStatus = clientStatus
 
     /* --------------------- 提示状态读写与去重 --------------------- */
     const persistState = async () => {
@@ -415,16 +439,18 @@ export function apply(ctx, config) {
     }
 
     /* ------------------- 确认下载与安装包移交 ------------------- */
-    const startDownload = (version) => {
+    const startDownload = (version, confirmFirst = true) => {
       if (downloadTask !== undefined) return downloadTask
       const task = (async () => {
-        let confirmed
-        try {
-          confirmed = await confirmDownload(version)
-        } catch {
-          return
+        if (confirmFirst) {
+          let confirmed
+          try {
+            confirmed = await confirmDownload(version)
+          } catch {
+            return
+          }
+          if (!confirmed || disposed) return
         }
-        if (!confirmed || disposed) return
 
         const confirmedVersion = observeResult(await startCheck())
         if (confirmedVersion !== version || disposed) return
@@ -435,6 +461,8 @@ export function apply(ctx, config) {
         const controller = new AbortController()
         downloadController = controller
         downloadingVersion = version
+        downloadedBytes = 0
+        downloadTotalBytes = asset.size > 0 && asset.size <= MAX_INSTALLER_BYTES ? asset.size : 0
         refreshTray()
         try {
           const directory = resolveDownloadDirectory(
@@ -444,7 +472,11 @@ export function apply(ctx, config) {
           )
           const existing = join(directory, asset.name)
           // 同名安装包已在磁盘且摘要吻合时复用，避免重复拉取整个安装包。
-          const path = await verifyDownloadedInstaller(existing, asset)
+          const alreadyDownloaded = await verifyDownloadedInstaller(existing, asset)
+          if (alreadyDownloaded && downloadTotalBytes > 0) {
+            downloadedBytes = downloadTotalBytes
+          }
+          const path = alreadyDownloaded
             ? existing
             : await downloadInstaller({
               asset,
@@ -452,6 +484,10 @@ export function apply(ctx, config) {
               request: adapter.request,
               directory,
               signal: controller.signal,
+              onProgress: (progress) => {
+                downloadedBytes = progress.downloadedBytes
+                downloadTotalBytes = progress.totalBytes
+              },
             })
           controller.signal.throwIfAborted()
           openInstaller(path)
@@ -461,6 +497,8 @@ export function apply(ctx, config) {
         } finally {
           if (downloadController === controller) downloadController = undefined
           downloadingVersion = undefined
+          downloadedBytes = 0
+          downloadTotalBytes = 0
           refreshTray()
         }
       })().finally(() => {
@@ -473,9 +511,17 @@ export function apply(ctx, config) {
     const offerDownload = async (version, automatic) => {
       if (disposed || !adapter.canDownload) return
       await stateReady
-      if (disposed || (automatic && state.lastPromptedVersion === version)) return
-      await rememberPrompt(version)
+      if (disposed || (automatic && autoPromptedVersion === version)) return
+      if (automatic) autoPromptedVersion = version
+      else await rememberPrompt(version)
       if (!disposed) await startDownload(version)
+    }
+
+    requestClientDownload = async () => {
+      const version = availableVersion
+      if (disposed || version === undefined || !adapter.canDownload) return false
+      await startDownload(version, false)
+      return true
     }
 
     /* ------------------- 手动与后台两条触发路径 ------------------- */
@@ -533,6 +579,8 @@ export function apply(ctx, config) {
 
     return async () => {
       disposed = true
+      readClientStatus = () => ({ phase: 'idle', productName })
+      requestClientDownload = async () => false
       if (pollTimer !== undefined) clearTimeout(pollTimer)
       if (requestTimer !== undefined) clearTimeout(requestTimer)
       requestController?.abort()
@@ -543,6 +591,20 @@ export function apply(ctx, config) {
       await Promise.allSettled(pending)
     }
   }, `${PACKAGE_NAME}: polling and installer handoff`)
+
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['connection'], (scoped) => {
+      scoped.effect(() => scoped.connection.rpc.handle(
+        UPDATE_RPC_CHANNEL,
+        async (endpoint) => {
+          if (endpoint === 'status') return rpcSuccess(readClientStatus())
+          if (endpoint === 'download') return rpcSuccess({ started: await requestClientDownload() })
+          return rpcFailure(`unknown endpoint ${String(endpoint)}`)
+        },
+        { authority: 'trusted-host' },
+      ), `${PACKAGE_NAME}: client update status`)
+    })
+  }
 }
 
 /* ====================================================================
@@ -722,6 +784,14 @@ function isRecord(value) {
 
 function isEnoent(value) {
   return isRecord(value) && value.code === 'ENOENT'
+}
+
+function rpcSuccess(value) {
+  return { ok: true, value }
+}
+
+function rpcFailure(message) {
+  return { ok: false, error: { code: 'internal', message, details: {} } }
 }
 
 /** @typedef {import('./index.d.ts').ParsedSemVer} ParsedSemVer */

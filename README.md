@@ -2,7 +2,9 @@
 
 `@tokens/dsh-version-updates` 是 TokensHarness 的独立 Cordis Host 插件。它只读取公开仓库 [`TokensAPI/tokens_TokensHarness_code`](https://github.com/TokensAPI/tokens_TokensHarness_code) 的 latest GitHub Release，不使用 npm 作为产品版本源。
 
-插件通过 `desktopRuntime` 使用 TokensHarness 提供的原生托盘、网络、确认对话框和安装器交接能力。它负责定时检查、手工检查、版本比较和提示历史；Windows 与 macOS 的实际安装包下载及打开仍由 Desktop 原生适配器负责。
+插件通过 `desktopRuntime` 使用 TokensHarness 提供的原生托盘、网络和确认对话框能力，并自行流式下载、校验和打开 Windows / macOS 安装包。它负责定时检查、手工检查、版本比较和提示历史。
+
+发现可安装的新版本后，浏览器客户端会在侧栏底部、设置入口上方显示下载按钮；下载期间同一位置显示实时百分比。侧栏折叠时保留圆形下载图标和进度环，因此 macOS 不依赖系统托盘也能看到更新状态并开始下载。
 
 当前产品版本以该仓库的 latest Release 为准。Release 标签必须使用 `v<version>`，并发布以下安装包：
 

@@ -104,11 +104,12 @@ export async function verifyDownloadedInstaller(path, asset) {
  * @param {import('./index.d.ts').UpdateRequest} options.request Fetch implementation.
  * @param {string} options.directory Private destination directory.
  * @param {AbortSignal} [options.signal] Caller-owned cancellation signal.
+ * @param {(progress: { downloadedBytes: number, totalBytes: number }) => void} [options.onProgress] Progress observer.
  * @returns {Promise<string>} Absolute path of the verified installer.
  * @throws When the response fails, exceeds limits, or the digest mismatches.
  */
 export async function downloadInstaller(options) {
-  const { asset, url, request, directory, signal } = options
+  const { asset, url, request, directory, signal, onProgress } = options
   const declaredDigest = parseSha256Digest(asset.digest)
   const sizeLimit = typeof asset.size === 'number' && asset.size > 0 && asset.size <= MAX_INSTALLER_BYTES
     ? asset.size
@@ -128,11 +129,18 @@ export async function downloadInstaller(options) {
     throw new Error(`installer download returned HTTP ${String(response.status)}`)
   }
   if (response.body === null) throw new Error('installer download returned an empty body')
+  const responseLength = response.headers.get('content-length')
+  const progressTotal = typeof asset.size === 'number' && asset.size > 0 && asset.size <= MAX_INSTALLER_BYTES
+    ? asset.size
+    : responseLength !== null && /^[0-9]+$/u.test(responseLength)
+      ? Math.min(Number(responseLength), sizeLimit)
+      : 0
 
   const hash = createHash('sha256')
   const handle = await open(temporary, 'wx', 0o600)
   const reader = response.body.getReader()
   let bytesWritten = 0
+  reportProgress(onProgress, bytesWritten, progressTotal)
   try {
     while (true) {
       signal?.throwIfAborted()
@@ -142,6 +150,7 @@ export async function downloadInstaller(options) {
       if (bytesWritten > sizeLimit) throw new Error('installer download exceeds the declared size')
       hash.update(chunk.value)
       await handle.write(chunk.value)
+      reportProgress(onProgress, bytesWritten, progressTotal)
     }
     if (bytesWritten === 0) throw new Error('installer download returned an empty body')
     await handle.sync()
@@ -195,4 +204,13 @@ function parseSha256Digest(digest) {
   const match = /^sha256:([0-9a-f]{64})$/iu.exec(digest)
   if (match === null) throw new Error('installer digest is invalid')
   return match[1].toLowerCase()
+}
+
+/** Progress observers are presentation-only and must never break a verified download. */
+function reportProgress(observer, downloadedBytes, totalBytes) {
+  try {
+    observer?.({ downloadedBytes, totalBytes })
+  } catch {
+    // A renderer status callback is not part of the download integrity path.
+  }
 }

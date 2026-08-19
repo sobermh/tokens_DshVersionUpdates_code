@@ -16,6 +16,7 @@
       "types": "./index.d.ts",
       "default": "./index.js"
     },
+    "./client": "./dist/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json",
     "./identity.js": {
@@ -30,6 +31,7 @@
     "download.js",
     "identity.js",
     "index.d.ts",
+    "dist/client.js",
     "cordis.patch.yml",
     "README.md"
   ],
@@ -39,10 +41,22 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-api-remotes"
+      ]
     }
   },
   "scripts": {
-    "check": "node --check index.js && node --test",
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "check": "node --check index.js && npm run typecheck && npm run build && node --test",
+    "prepack": "npm run build",
     "test": "node --test"
   },
   "dependencies": {
@@ -54,6 +68,18 @@
     "@deepseek-ai/cordis": "^4.0.1"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "4.0.1"
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-api-remotes": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-runtime": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-sidebar": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-slots": "0.1.0-rc.6",
+    "@types/react": "~18.3.1",
+    "esbuild": "^0.24.0",
+    "react": "^18.3.1",
+    "typescript": "^5.7.0"
+  },
+  "allowScripts": {
+    "esbuild@0.24.2": true
   }
 }

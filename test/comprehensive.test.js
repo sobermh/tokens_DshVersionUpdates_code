@@ -62,7 +62,8 @@ async function tempDir(tag) {
 function harness(options = {}) {
   const log = { manual: [], confirmed: [], requests: [] }
   let tray
-  let disposer
+  let rpcHandler
+  const disposers = []
   const registration = {
     refreshCount: 0,
     refresh() { registration.refreshCount += 1 },
@@ -91,7 +92,24 @@ function harness(options = {}) {
       updates: adapter,
       registerTrayItem(item) { tray = item; return registration },
     },
-    effect(register) { disposer = register() },
+    effect(register) {
+      const disposer = register()
+      if (typeof disposer === 'function') disposers.push(disposer)
+    },
+    inject(_services, apply) {
+      if (!options.connection) return
+      apply({
+        ...ctx,
+        connection: {
+          rpc: {
+            handle(_channel, handler) {
+              rpcHandler = handler
+              return () => { rpcHandler = undefined }
+            },
+          },
+        },
+      })
+    },
   }
   return {
     ctx,
@@ -102,7 +120,16 @@ function harness(options = {}) {
       // 默认下载目录钉在本次临时目录：真实默认位置在应用数据目录下，
       // 测试绝不能往那里写。关心默认位置的用例自行覆盖这个字段。
       apply(ctx, Config({ enabled: false, downloadDirectory: options.root, ...config }))
-      return { tray, dispose: () => disposer() }
+      return {
+        tray,
+        rpc: async (endpoint, payload = {}) => {
+          assert.notEqual(rpcHandler, undefined, 'RPC channel must be registered')
+          return rpcHandler(endpoint, payload)
+        },
+        dispose: async () => {
+          for (const disposer of disposers.reverse()) await disposer()
+        },
+      }
     },
   }
 }
@@ -1305,7 +1332,25 @@ test('117 background polling prompts only once for the same version', async () =
   }
 })
 
-test('118 dispose stops the background poll loop', async () => {
+test('118 background polling prompts again after app restart', async () => {
+  const root = await tempDir('restart-prompt')
+  try {
+    await writeFile(join(root, 'state.json'), JSON.stringify({ version: 2, lastPromptedVersion: '0.2.0' }))
+    const host = harness({
+      root,
+      adapter: { isPackaged: true },
+      request: async () => release({ tag_name: 'v0.2.0' }),
+    })
+    const { dispose } = host.start({ enabled: true, initialDelayMs: 1, intervalMs: 3_600_000 })
+    await new Promise(resolve => { setTimeout(resolve, 80) })
+    await dispose()
+    assert.deepEqual(host.log.confirmed, ['0.2.0'])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('119 dispose stops the background poll loop', async () => {
   const root = await tempDir('stoppoll')
   try {
     const host = harness({
@@ -1324,7 +1369,7 @@ test('118 dispose stops the background poll loop', async () => {
   }
 })
 
-test('119 a request timeout aborts the check and surfaces a failed lookup', async () => {
+test('120 a request timeout aborts the check and surfaces a failed lookup', async () => {
   const root = await tempDir('timeout')
   try {
     const host = harness({
@@ -1342,7 +1387,7 @@ test('119 a request timeout aborts the check and surfaces a failed lookup', asyn
   }
 })
 
-test('120 a rejected confirmation leaves the plugin usable for the next check', async () => {
+test('121 a rejected confirmation leaves the plugin usable for the next check', async () => {
   const root = await tempDir('confirmthrow')
   try {
     const host = harness({
@@ -1378,7 +1423,7 @@ const SUPPORTED_HOST = selectInstallerAsset(
   [{ name: `x-${process.platform === 'win32' ? 'windows-amd64-installer.exe' : 'macos-arm64-installer.dmg'}`, url: 'https://github.com/x', size: 1, digest: null }],
 ) !== null
 
-test('121 confirming a download fetches and verifies the installer end to end', {
+test('122 confirming a download fetches and verifies the installer end to end', {
   skip: SUPPORTED_HOST ? false : 'unsupported host platform',
 }, async () => {
   const root = await tempDir('e2e')
@@ -1410,7 +1455,7 @@ test('121 confirming a download fetches and verifies the installer end to end', 
   }
 })
 
-test('122 a tampered installer is never written to its final path', {
+test('123 a tampered installer is never written to its final path', {
   skip: SUPPORTED_HOST ? false : 'unsupported host platform',
 }, async () => {
   const root = await tempDir('tamper')
@@ -1441,7 +1486,7 @@ test('122 a tampered installer is never written to its final path', {
   }
 })
 
-test('123 a release without a matching installer asset downloads nothing', async () => {
+test('124 a release without a matching installer asset downloads nothing', async () => {
   const root = await tempDir('noasset')
   try {
     const host = harness({
@@ -1461,7 +1506,7 @@ test('123 a release without a matching installer asset downloads nothing', async
   }
 })
 
-test('124 declining the confirmation dialog downloads nothing', async () => {
+test('125 declining the confirmation dialog downloads nothing', async () => {
   const root = await tempDir('decline')
   try {
     const asset = downloadableRelease('0.2.0', Buffer.from('bytes'))
@@ -1494,7 +1539,7 @@ test('124 declining the confirmation dialog downloads nothing', async () => {
   }
 })
 
-test('125 the download mirror prefix rewrites the GitHub asset host', {
+test('126 the download mirror prefix rewrites the GitHub asset host', {
   skip: SUPPORTED_HOST ? false : 'unsupported host platform',
 }, async () => {
   const root = await tempDir('mirrorcfg')
@@ -1533,7 +1578,7 @@ test('125 the download mirror prefix rewrites the GitHub asset host', {
   }
 })
 
-test('126 a non-HTTPS mirror prefix is ignored and GitHub is used directly', {
+test('127 a non-HTTPS mirror prefix is ignored and GitHub is used directly', {
   skip: SUPPORTED_HOST ? false : 'unsupported host platform',
 }, async () => {
   const root = await tempDir('badmirror')
@@ -1569,7 +1614,7 @@ test('126 a non-HTTPS mirror prefix is ignored and GitHub is used directly', {
   }
 })
 
-test('127 the tray reports the downloading state while an installer transfers', {
+test('128 the tray reports the downloading state while an installer transfers', {
   skip: SUPPORTED_HOST ? false : 'unsupported host platform',
 }, async () => {
   const root = await tempDir('dlstate')
@@ -1612,16 +1657,18 @@ test('127 the tray reports the downloading state while an installer transfers', 
 
 /* ==================== 14. 文档与清单一致性 ==================== */
 
-test('128 the package manifest exposes the documented entry points', async () => {
+test('129 the package manifest exposes the documented entry points', async () => {
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
   assert.equal(manifest.type, 'module')
   assert.equal(manifest.dsh.bundle.patch, './cordis.patch.yml')
-  for (const file of ['index.js', 'download.js', 'identity.js', 'cordis.patch.yml']) {
+  assert.equal(manifest.exports['./client'], './dist/client.js')
+  assert.equal(manifest.dsh.client.platform, 'web')
+  for (const file of ['index.js', 'download.js', 'identity.js', 'dist/client.js', 'cordis.patch.yml']) {
     assert.ok(manifest.files.includes(file), `${file} must ship in the published package`)
   }
 })
 
-test('129 the README documents the release source that identity.js actually queries', async () => {
+test('130 the README documents the release source that identity.js actually queries', async () => {
   const { GITHUB_OWNER, GITHUB_REPO } = await import('../identity.js')
   const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8')
   assert.ok(
@@ -1630,7 +1677,7 @@ test('129 the README documents the release source that identity.js actually quer
   )
 })
 
-test('130 the README documents the asset names the downloader actually matches', async () => {
+test('131 the README documents the asset names the downloader actually matches', async () => {
   const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8')
   for (const suffix of ['windows-amd64-installer.exe', 'macos-arm64-installer.dmg']) {
     assert.ok(readme.includes(suffix), `README must document the ${suffix} asset`)
@@ -1640,7 +1687,7 @@ test('130 the README documents the asset names the downloader actually matches',
 
 const DIALOG_BRAND = { productName: 'TokensHarness', releasesPageURL: 'https://github.com/TokensAPI/tokens_TokensHarness_code/releases/latest' }
 
-test('131 a failed manual check is described as a warning that asks the user to retry', () => {
+test('132 a failed manual check is described as a warning that asks the user to retry', () => {
   const dialog = describeManualCheck(null, DIALOG_BRAND)
   assert.equal(dialog.type, 'warning')
   assert.equal(dialog.title, 'Unable to Check for Updates')
@@ -1648,7 +1695,7 @@ test('131 a failed manual check is described as a warning that asks the user to 
   assert.equal(dialog.detail, 'Please try again later.')
 })
 
-test('132 an up-to-date manual check names the installed version and claims no newer build', () => {
+test('133 an up-to-date manual check names the installed version and claims no newer build', () => {
   const dialog = describeManualCheck(
     { status: 'up-to-date', currentVersion: '0.1.2', latestVersion: '0.1.2', assets: [] },
     DIALOG_BRAND,
@@ -1658,7 +1705,7 @@ test('132 an up-to-date manual check names the installed version and claims no n
   assert.equal(dialog.detail, 'Installed version: 0.1.2')
 })
 
-test('133 an available update is never described as up to date', () => {
+test('134 an available update is never described as up to date', () => {
   const dialog = describeManualCheck(
     { status: 'update-available', currentVersion: '0.1.2', latestVersion: '0.2.0', assets: [] },
     DIALOG_BRAND,
@@ -1670,7 +1717,7 @@ test('133 an available update is never described as up to date', () => {
   assert.ok(!dialog.detail.includes('No newer version'))
 })
 
-test('134 an available update points the user at the manual download page', () => {
+test('135 an available update points the user at the manual download page', () => {
   const dialog = describeManualCheck(
     { status: 'update-available', currentVersion: '0.1.2', latestVersion: '0.2.0', assets: [] },
     DIALOG_BRAND,
@@ -1679,7 +1726,7 @@ test('134 an available update points the user at the manual download page', () =
   assert.ok(dialog.detail.startsWith('This build cannot install updates automatically.'))
 })
 
-test('135 every dialog carries the configured brand rather than the built-in default', () => {
+test('136 every dialog carries the configured brand rather than the built-in default', () => {
   const brand = { productName: 'MyBrand', releasesPageURL: 'https://github.com/my-org/my_repo/releases/latest' }
   const cases = [
     null,
@@ -1697,7 +1744,7 @@ test('135 every dialog carries the configured brand rather than the built-in def
   }
 })
 
-test('136 the manual download link is an HTTPS GitHub releases URL, never a mirror or plaintext host', () => {
+test('137 the manual download link is an HTTPS GitHub releases URL, never a mirror or plaintext host', () => {
   const dialog = describeManualCheck(
     { status: 'update-available', currentVersion: '0.1.2', latestVersion: '0.2.0', assets: [] },
     DIALOG_BRAND,
@@ -1708,7 +1755,7 @@ test('136 the manual download link is an HTTPS GitHub releases URL, never a mirr
   assert.ok(!dialog.detail.includes('http://'))
 })
 
-test('137 a runtime that cannot download still reports the available version to the host adapter', async () => {
+test('138 a runtime that cannot download still reports the available version to the host adapter', async () => {
   const root = await tempDir('nodl')
   try {
     const bench = harness({
@@ -1731,7 +1778,7 @@ test('137 a runtime that cannot download still reports the available version to 
   }
 })
 
-test('138 the describeManualCheck contract stays a pure function of its inputs', () => {
+test('139 the describeManualCheck contract stays a pure function of its inputs', () => {
   const result = Object.freeze({ status: 'update-available', currentVersion: '0.1.2', latestVersion: '0.2.0', assets: Object.freeze([]) })
   const first = describeManualCheck(result, DIALOG_BRAND)
   const second = describeManualCheck(result, DIALOG_BRAND)
@@ -1756,7 +1803,7 @@ async function seedInstaller(directory, name, payload) {
   }
 }
 
-test('139 verifyDownloadedInstaller accepts a file whose digest matches the release asset', async () => {
+test('140 verifyDownloadedInstaller accepts a file whose digest matches the release asset', async () => {
   const root = await tempDir('verify-hit')
   try {
     const { path, asset } = await seedInstaller(root, 'a.exe', Buffer.from('installer-bytes'))
@@ -1766,7 +1813,7 @@ test('139 verifyDownloadedInstaller accepts a file whose digest matches the rele
   }
 })
 
-test('140 verifyDownloadedInstaller hashes a file spanning several read buffers', async () => {
+test('141 verifyDownloadedInstaller hashes a file spanning several read buffers', async () => {
   const root = await tempDir('verify-big')
   try {
     const payload = Buffer.alloc(3 * 1024 * 1024 + 7, 0x41)
@@ -1777,7 +1824,7 @@ test('140 verifyDownloadedInstaller hashes a file spanning several read buffers'
   }
 })
 
-test('141 verifyDownloadedInstaller accepts an uppercase digest from the release document', async () => {
+test('142 verifyDownloadedInstaller accepts an uppercase digest from the release document', async () => {
   const root = await tempDir('verify-case')
   try {
     const { path, asset } = await seedInstaller(root, 'c.exe', Buffer.from('installer-bytes'))
@@ -1788,7 +1835,7 @@ test('141 verifyDownloadedInstaller accepts an uppercase digest from the release
   }
 })
 
-test('142 verifyDownloadedInstaller rejects a file whose bytes were tampered with', async () => {
+test('143 verifyDownloadedInstaller rejects a file whose bytes were tampered with', async () => {
   const root = await tempDir('verify-tamper')
   try {
     const { path, asset } = await seedInstaller(root, 'd.exe', Buffer.from('installer-bytes'))
@@ -1799,7 +1846,7 @@ test('142 verifyDownloadedInstaller rejects a file whose bytes were tampered wit
   }
 })
 
-test('143 verifyDownloadedInstaller rejects a size that disagrees with the release asset', async () => {
+test('144 verifyDownloadedInstaller rejects a size that disagrees with the release asset', async () => {
   const root = await tempDir('verify-size')
   try {
     const { path, asset } = await seedInstaller(root, 'e.exe', Buffer.from('installer-bytes'))
@@ -1809,7 +1856,7 @@ test('143 verifyDownloadedInstaller rejects a size that disagrees with the relea
   }
 })
 
-test('144 verifyDownloadedInstaller reports a missing file instead of throwing', async () => {
+test('145 verifyDownloadedInstaller reports a missing file instead of throwing', async () => {
   const root = await tempDir('verify-gone')
   try {
     const asset = { name: 'f.exe', url: 'https://github.com/x', size: 4, digest: `sha256:${'a'.repeat(64)}` }
@@ -1819,7 +1866,7 @@ test('144 verifyDownloadedInstaller reports a missing file instead of throwing',
   }
 })
 
-test('145 verifyDownloadedInstaller rejects a directory standing where the installer belongs', async () => {
+test('146 verifyDownloadedInstaller rejects a directory standing where the installer belongs', async () => {
   const root = await tempDir('verify-dir')
   try {
     const asset = { name: 'g.exe', url: 'https://github.com/x', size: 4, digest: `sha256:${'a'.repeat(64)}` }
@@ -1829,7 +1876,7 @@ test('145 verifyDownloadedInstaller rejects a directory standing where the insta
   }
 })
 
-test('146 verifyDownloadedInstaller rejects an empty file', async () => {
+test('147 verifyDownloadedInstaller rejects an empty file', async () => {
   const root = await tempDir('verify-empty')
   try {
     const { path, asset } = await seedInstaller(root, 'h.exe', Buffer.alloc(0))
@@ -1839,7 +1886,7 @@ test('146 verifyDownloadedInstaller rejects an empty file', async () => {
   }
 })
 
-test('147 verifyDownloadedInstaller refuses to trust a release that declares no digest', async () => {
+test('148 verifyDownloadedInstaller refuses to trust a release that declares no digest', async () => {
   const root = await tempDir('verify-nodigest')
   try {
     const { path, asset } = await seedInstaller(root, 'i.exe', Buffer.from('installer-bytes'))
@@ -1851,7 +1898,7 @@ test('147 verifyDownloadedInstaller refuses to trust a release that declares no 
   }
 })
 
-test('148 verifyDownloadedInstaller returns false rather than throwing on a malformed digest', async () => {
+test('149 verifyDownloadedInstaller returns false rather than throwing on a malformed digest', async () => {
   const root = await tempDir('verify-malformed')
   try {
     const { path, asset } = await seedInstaller(root, 'j.exe', Buffer.from('installer-bytes'))
@@ -1863,7 +1910,7 @@ test('148 verifyDownloadedInstaller returns false rather than throwing on a malf
   }
 })
 
-test('149 an installer already on disk is reused without any network download', {
+test('150 an installer already on disk is reused without any network download', {
   skip: SUPPORTED_HOST ? false : 'unsupported host platform',
 }, async () => {
   const root = await tempDir('reuse-hit')
@@ -1903,7 +1950,7 @@ test('149 an installer already on disk is reused without any network download', 
   }
 })
 
-test('150 a tampered installer on disk is refetched instead of being trusted', {
+test('151 a tampered installer on disk is refetched instead of being trusted', {
   skip: SUPPORTED_HOST ? false : 'unsupported host platform',
 }, async () => {
   const root = await tempDir('reuse-miss')
@@ -1956,18 +2003,18 @@ function context(overrides = {}) {
   return { productName: 'TokensHarness', statePath: STATE_PATH, platform: 'win32', env: WIN_ENV, ...overrides }
 }
 
-test('151 productDataDirectory places Windows state under the roaming application data directory', () => {
+test('152 productDataDirectory places Windows state under the roaming application data directory', () => {
   assert.equal(productDataDirectory('TokensHarness', 'win32', WIN_ENV), join(WIN_ENV.APPDATA, 'TokensHarness'))
 })
 
-test('152 productDataDirectory falls back to the standard roaming path when APPDATA is unusable', () => {
+test('153 productDataDirectory falls back to the standard roaming path when APPDATA is unusable', () => {
   const expected = join(homedir(), 'AppData', 'Roaming', 'TokensHarness')
   for (const env of [{}, { APPDATA: '' }, { APPDATA: '   ' }, { APPDATA: 42 }]) {
     assert.equal(productDataDirectory('TokensHarness', 'win32', env), expected, JSON.stringify(env))
   }
 })
 
-test('153 productDataDirectory follows the macOS and XDG conventions on other platforms', () => {
+test('154 productDataDirectory follows the macOS and XDG conventions on other platforms', () => {
   assert.equal(
     productDataDirectory('TokensHarness', 'darwin', {}),
     join(homedir(), 'Library', 'Application Support', 'TokensHarness'),
@@ -1979,21 +2026,21 @@ test('153 productDataDirectory follows the macOS and XDG conventions on other pl
   )
 })
 
-test('154 productDataDirectory refuses a product name that cannot be one directory segment', () => {
+test('155 productDataDirectory refuses a product name that cannot be one directory segment', () => {
   // 产品名来自配置，可能被写成任意字符串；它绝不能越出应用数据目录。
   for (const name of ['a/b', 'a\\b', 'C:', 'a:b', 'a*b', 'a?b', 'a"b', 'a<b', 'a>b', 'a|b', '.', '..', '...', '', '   ', 42, null, undefined]) {
     assert.equal(productDataDirectory(name, 'win32', WIN_ENV), null, String(name))
   }
 })
 
-test('155 resolveDownloadDirectory defaults to the product application data directory', () => {
+test('156 resolveDownloadDirectory defaults to the product application data directory', () => {
   assert.equal(
     resolveDownloadDirectory('', context(), '0.2.0'),
     join(WIN_ENV.APPDATA, 'TokensHarness', 'updates', '0.2.0'),
   )
 })
 
-test('156 the default location follows the product name rather than the host application', () => {
+test('157 the default location follows the product name rather than the host application', () => {
   // 宿主的 statePath 仍指向 DSH Desktop，默认位置必须不再跟随它。
   const resolved = resolveDownloadDirectory('', context(), '0.2.0')
   assert.ok(!resolved.includes('DSH Desktop'), `installers must leave the host directory: ${resolved}`)
@@ -2003,22 +2050,22 @@ test('156 the default location follows the product name rather than the host app
   )
 })
 
-test('157 resolveDownloadDirectory falls back beside the state file when the product name is unusable', () => {
+test('158 resolveDownloadDirectory falls back beside the state file when the product name is unusable', () => {
   for (const productName of ['..', 'a/b', '', 42]) {
     assert.equal(resolveDownloadDirectory('', context({ productName }), '0.2.0'), STATE_SIBLING, String(productName))
   }
 })
 
-test('158 resolveDownloadDirectory appends the version to a configured absolute directory', () => {
+test('159 resolveDownloadDirectory appends the version to a configured absolute directory', () => {
   assert.equal(resolveDownloadDirectory(ABSOLUTE_TARGET, context(), '0.2.0'), join(ABSOLUTE_TARGET, '0.2.0'))
 })
 
-test('159 resolveDownloadDirectory expands a leading tilde to the home directory', () => {
+test('160 resolveDownloadDirectory expands a leading tilde to the home directory', () => {
   assert.equal(resolveDownloadDirectory('~', context(), '0.2.0'), join(homedir(), '0.2.0'))
   assert.equal(resolveDownloadDirectory('~/Downloads', context(), '0.2.0'), join(homedir(), 'Downloads', '0.2.0'))
 })
 
-test('160 resolveDownloadDirectory trims surrounding whitespace before deciding', () => {
+test('161 resolveDownloadDirectory trims surrounding whitespace before deciding', () => {
   const target = join(ABSOLUTE_TARGET, '0.2.0')
   assert.equal(resolveDownloadDirectory(`  ${ABSOLUTE_TARGET}  `, context(), '0.2.0'), target)
   assert.equal(
@@ -2027,7 +2074,7 @@ test('160 resolveDownloadDirectory trims surrounding whitespace before deciding'
   )
 })
 
-test('161 resolveDownloadDirectory falls back for relative and unusable configuration', () => {
+test('162 resolveDownloadDirectory falls back for relative and unusable configuration', () => {
   const fallback = join(WIN_ENV.APPDATA, 'TokensHarness', 'updates', '0.2.0')
   // 相对路径的基准是进程 cwd，桌面端不可预期，写到那里等于把安装包丢在未知位置。
   for (const configured of ['./installers', 'installers', '../installers', '~user/x', undefined, null, 42, {}]) {
@@ -2035,7 +2082,7 @@ test('161 resolveDownloadDirectory falls back for relative and unusable configur
   }
 })
 
-test('162 every resolved directory ends in the version so releases cannot overwrite each other', () => {
+test('163 every resolved directory ends in the version so releases cannot overwrite each other', () => {
   const cases = ['', ABSOLUTE_TARGET, '~', './relative', '   ']
   for (const configured of cases) {
     const first = resolveDownloadDirectory(configured, context(), '0.2.0')
@@ -2046,7 +2093,7 @@ test('162 every resolved directory ends in the version so releases cannot overwr
   }
 })
 
-test('163 a configured absolute downloadDirectory receives the installer', {
+test('164 a configured absolute downloadDirectory receives the installer', {
   skip: SUPPORTED_HOST ? false : 'unsupported host platform',
 }, async () => {
   const root = await tempDir('dir-abs')
@@ -2081,7 +2128,7 @@ test('163 a configured absolute downloadDirectory receives the installer', {
   }
 })
 
-test('164 a relative downloadDirectory writes to the default location, never the process cwd', {
+test('165 a relative downloadDirectory writes to the default location, never the process cwd', {
   skip: SUPPORTED_HOST ? false : 'unsupported host platform',
 }, async () => {
   const root = await tempDir('dir-rel')
@@ -2118,8 +2165,91 @@ test('164 a relative downloadDirectory writes to the default location, never the
   }
 })
 
-test('165 Config exposes downloadDirectory and defaults it to the empty string', () => {
+test('166 Config exposes downloadDirectory and defaults it to the empty string', () => {
   assert.equal(Config({}).downloadDirectory, '')
   assert.equal(Config({ downloadDirectory: '/srv/installers' }).downloadDirectory, '/srv/installers')
   assert.throws(() => Config({ downloadDirectory: 42 }))
+})
+
+test('167 downloadInstaller reports monotonic byte progress through completion', async () => {
+  const root = await tempDir('progress')
+  try {
+    const chunks = ['alpha', 'beta', 'gamma'].map(value => Buffer.from(value))
+    const payload = Buffer.concat(chunks)
+    const seen = []
+    await downloadInstaller({
+      asset: { name: 'progress.exe', url: 'https://github.com/x', size: payload.byteLength, digest: null },
+      url: 'https://github.com/x',
+      request: async () => new Response(new ReadableStream({
+        start(controller) {
+          for (const chunk of chunks) controller.enqueue(new Uint8Array(chunk))
+          controller.close()
+        },
+      })),
+      directory: root,
+      onProgress: progress => { seen.push(progress) },
+    })
+    assert.deepEqual(seen[0], { downloadedBytes: 0, totalBytes: payload.byteLength })
+    assert.deepEqual(seen.at(-1), { downloadedBytes: payload.byteLength, totalBytes: payload.byteLength })
+    for (let index = 1; index < seen.length; index += 1) {
+      assert.ok(seen[index].downloadedBytes >= seen[index - 1].downloadedBytes)
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('168 client RPC exposes an available update and starts its download without another confirmation', {
+  skip: SUPPORTED_HOST ? false : 'unsupported host platform',
+}, async () => {
+  const root = await tempDir('client-rpc')
+  try {
+    const payload = Buffer.from('client-download-bytes')
+    const asset = downloadableRelease('0.2.0', payload)
+    let openGate
+    const gate = new Promise(resolve => { openGate = resolve })
+    const host = harness({
+      root,
+      connection: true,
+      confirm: false,
+      request: async (url) => {
+        if (url.endsWith('/releases/latest')) {
+          return release({
+            tag_name: 'v0.2.0',
+            assets: [{
+              name: asset.name,
+              browser_download_url: `https://github.com/o/r/releases/download/v0.2.0/${asset.name}`,
+              size: asset.size,
+              digest: asset.digest,
+            }],
+          })
+        }
+        await gate
+        return new Response(payload)
+      },
+    })
+    const { tray, rpc, dispose } = host.start()
+    await tray.invoke()
+    assert.deepEqual(await rpc('status'), {
+      ok: true,
+      value: { phase: 'available', productName: 'TokensHarness', version: '0.2.0' },
+    })
+
+    const pending = rpc('download')
+    let downloading
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      downloading = await rpc('status')
+      if (downloading.value?.phase === 'downloading') break
+      await new Promise(resolve => { setTimeout(resolve, 10) })
+    }
+    assert.equal(downloading.value.phase, 'downloading')
+    assert.equal(downloading.value.totalBytes, payload.byteLength)
+    assert.deepEqual(host.log.confirmed, ['0.2.0'], 'the sidebar button is already an explicit confirmation')
+
+    openGate()
+    assert.deepEqual(await pending, { ok: true, value: { started: true } })
+    await dispose()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
