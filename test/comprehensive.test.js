@@ -14,6 +14,7 @@ import {
   apply,
   checkForStableUpdate,
   compareSemVerVersions,
+  describeManualCheck,
   parseSemVer,
 } from '../index.js'
 import { MAX_INSTALLER_BYTES, downloadInstaller, openInstaller, selectInstallerAsset } from '../download.js'
@@ -1623,4 +1624,106 @@ test('130 the README documents the asset names the downloader actually matches',
   for (const suffix of ['windows-amd64-installer.exe', 'macos-arm64-installer.dmg']) {
     assert.ok(readme.includes(suffix), `README must document the ${suffix} asset`)
   }
+})
+/* ==================== 15. 手动检查弹窗文案 ==================== */
+
+const DIALOG_BRAND = { productName: 'TokensHarness', releasesPageURL: 'https://github.com/TokensAPI/tokens_TokensHarness_code/releases/latest' }
+
+test('131 a failed manual check is described as a warning that asks the user to retry', () => {
+  const dialog = describeManualCheck(null, DIALOG_BRAND)
+  assert.equal(dialog.type, 'warning')
+  assert.equal(dialog.title, 'Unable to Check for Updates')
+  assert.equal(dialog.message, 'TokensHarness could not check for updates.')
+  assert.equal(dialog.detail, 'Please try again later.')
+})
+
+test('132 an up-to-date manual check names the installed version and claims no newer build', () => {
+  const dialog = describeManualCheck(
+    { status: 'up-to-date', currentVersion: '0.1.2', latestVersion: '0.1.2', assets: [] },
+    DIALOG_BRAND,
+  )
+  assert.equal(dialog.type, 'info')
+  assert.equal(dialog.title, 'TokensHarness Is Up to Date')
+  assert.equal(dialog.detail, 'Installed version: 0.1.2')
+})
+
+test('133 an available update is never described as up to date', () => {
+  const dialog = describeManualCheck(
+    { status: 'update-available', currentVersion: '0.1.2', latestVersion: '0.2.0', assets: [] },
+    DIALOG_BRAND,
+  )
+  assert.equal(dialog.type, 'info')
+  assert.equal(dialog.title, 'TokensHarness Update Available')
+  assert.equal(dialog.message, 'TokensHarness 0.2.0 is available.')
+  assert.ok(!dialog.message.includes('No newer version'))
+  assert.ok(!dialog.detail.includes('No newer version'))
+})
+
+test('134 an available update points the user at the manual download page', () => {
+  const dialog = describeManualCheck(
+    { status: 'update-available', currentVersion: '0.1.2', latestVersion: '0.2.0', assets: [] },
+    DIALOG_BRAND,
+  )
+  assert.ok(dialog.detail.includes(DIALOG_BRAND.releasesPageURL))
+  assert.ok(dialog.detail.startsWith('This build cannot install updates automatically.'))
+})
+
+test('135 every dialog carries the configured brand rather than the built-in default', () => {
+  const brand = { productName: 'MyBrand', releasesPageURL: 'https://github.com/my-org/my_repo/releases/latest' }
+  const cases = [
+    null,
+    { status: 'up-to-date', currentVersion: '1.0.0', latestVersion: '1.0.0', assets: [] },
+    { status: 'update-available', currentVersion: '1.0.0', latestVersion: '2.0.0', assets: [] },
+  ]
+  for (const result of cases) {
+    const dialog = describeManualCheck(result, brand)
+    assert.ok(
+      `${dialog.title} ${dialog.message} ${dialog.detail}`.includes('MyBrand')
+      || dialog.detail.includes(brand.releasesPageURL),
+      `dialog for ${String(result?.status)} must carry the configured brand`,
+    )
+    assert.ok(!dialog.detail.includes('TokensHarness'))
+  }
+})
+
+test('136 the manual download link is an HTTPS GitHub releases URL, never a mirror or plaintext host', () => {
+  const dialog = describeManualCheck(
+    { status: 'update-available', currentVersion: '0.1.2', latestVersion: '0.2.0', assets: [] },
+    DIALOG_BRAND,
+  )
+  const url = dialog.detail.slice(dialog.detail.indexOf('https://'))
+  assert.ok(url.startsWith('https://github.com/'))
+  assert.ok(url.endsWith('/releases/latest'))
+  assert.ok(!dialog.detail.includes('http://'))
+})
+
+test('137 a runtime that cannot download still reports the available version to the host adapter', async () => {
+  const root = await tempDir('nodl')
+  try {
+    const bench = harness({
+      root,
+      adapter: { canDownload: false },
+      request: async () => release({ tag_name: 'v0.2.0' }),
+    })
+    const { tray, dispose } = bench.start()
+    await tray.invoke()
+    assert.equal(bench.log.confirmed.length, 0, 'a runtime without download support must not prompt')
+    assert.deepEqual(bench.log.manual, [{
+      status: 'update-available',
+      currentVersion: '0.1.0',
+      latestVersion: '0.2.0',
+      assets: [],
+    }], 'the host adapter must still learn that a newer version exists')
+    await dispose()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('138 the describeManualCheck contract stays a pure function of its inputs', () => {
+  const result = Object.freeze({ status: 'update-available', currentVersion: '0.1.2', latestVersion: '0.2.0', assets: Object.freeze([]) })
+  const first = describeManualCheck(result, DIALOG_BRAND)
+  const second = describeManualCheck(result, DIALOG_BRAND)
+  assert.deepEqual(first, second)
+  assert.deepEqual(Object.keys(first).sort(), ['detail', 'message', 'title', 'type'])
 })
