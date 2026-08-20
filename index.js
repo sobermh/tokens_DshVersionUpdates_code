@@ -22,12 +22,15 @@ import {
   PACKAGE_NAME,
   PLUGIN_NAME,
   PRODUCT_NAME,
+  RELEASE_API_URL,
   RELEASE_ENDPOINT,
+  RELEASE_INDEX_ENDPOINT,
+  RELEASE_INDEX_URL,
   REQUEST_TIMEOUT_MS,
   UPDATES_ENABLED,
 } from './identity.js'
 
-export { RELEASE_ENDPOINT }
+export { RELEASE_ENDPOINT, RELEASE_INDEX_ENDPOINT }
 export {
   selectInstallerAsset,
   downloadInstaller,
@@ -48,8 +51,8 @@ export const name = PLUGIN_NAME
 /** Native adapter required for network, tray, confirmation, and installer access. */
 export const inject = ['desktopRuntime']
 
-/** Maximum response body bytes accepted from GitHub's release document. */
-export const MAX_VERSION_RESPONSE_BYTES = 256 * 1024
+/** Maximum response body bytes accepted from a Release document or index. */
+export const MAX_VERSION_RESPONSE_BYTES = 2 * 1024 * 1024
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 const MAX_STATE_BYTES = 4 * 1024
@@ -70,6 +73,8 @@ export const Config = Schema.object({
   productName: Schema.string().default(PRODUCT_NAME),
   githubOwner: Schema.string().default(GITHUB_OWNER),
   githubRepo: Schema.string().default(GITHUB_REPO),
+  releaseIndexURL: Schema.string(),
+  releaseAPIURL: Schema.string(),
 })
 
 /* ====================================================================
@@ -116,13 +121,13 @@ export function compareSemVerVersions(left, right) {
 
 /* ====================================================================
  * 版本检查（导出）
- * 请求 GitHub latest Release 并与当前版本比较；任何请求、解析或
- * 校验失败都返回 null，不向调用方抛出。
+ * 优先请求 Pages Release 索引并与当前版本比较，索引不可用时降级
+ * GitHub latest Release API；所有来源都只接受正式稳定版本。
  * ==================================================================== */
 
 /**
  * Check the TokensHarness GitHub repository for a newer stable Release.
- * @param {{ currentVersion: string, signal?: AbortSignal, request?: import('./index.js').UpdateRequest, endpoint?: string, userAgent?: string }} options Check inputs.
+ * @param {{ currentVersion: string, signal?: AbortSignal, request?: import('./index.js').UpdateRequest, endpoint?: string, fallbackEndpoint?: string, userAgent?: string }} options Check inputs.
  * @returns {Promise<import('./index.js').UpdateCheckResult | null>} Comparison or null on failure.
  */
 export async function checkForStableUpdate(options) {
@@ -142,22 +147,31 @@ export async function checkForStableUpdate(options) {
   }
   const request = options.request ?? globalThis.fetch
 
-  let response
-  try {
-    response = await request(options.endpoint ?? RELEASE_ENDPOINT, init)
-  } catch {
-    return null
-  }
-  if (response.status !== 200) return null
+  const endpoints = options.endpoint === undefined
+    ? [RELEASE_INDEX_ENDPOINT, RELEASE_ENDPOINT]
+    : [options.endpoint, ...(options.fallbackEndpoint === undefined ? [] : [options.fallbackEndpoint])]
+  let parsed = null
+  for (const endpoint of new Set(endpoints)) {
+    if (options.signal?.aborted === true) return null
+    let response
+    try {
+      response = await request(endpoint, init)
+    } catch {
+      if (options.signal?.aborted === true) return null
+      continue
+    }
+    if (response.status !== 200) continue
 
-  let body
-  try {
-    body = await readLimitedBody(response)
-  } catch {
-    return null
+    let body
+    try {
+      body = await readLimitedBody(response)
+    } catch {
+      if (options.signal?.aborted === true) return null
+      continue
+    }
+    parsed = parseVersionResponse(body)
+    if (parsed !== null) break
   }
-
-  const parsed = parseVersionResponse(body)
   if (parsed === null) return null
   return {
     status: compareParsedSemVer(parsed.latest, current) > 0 ? 'update-available' : 'up-to-date',
@@ -282,8 +296,22 @@ export function resolveDownloadDirectory(configured, context, version) {
 export function apply(ctx, config) {
   const adapter = ctx.desktopRuntime.updates
   const productName = config.productName ?? PRODUCT_NAME
-  const releaseEndpoint = `https://api.github.com/repos/${config.githubOwner ?? GITHUB_OWNER}/${config.githubRepo ?? GITHUB_REPO}/releases/latest`
-  const releasesPageURL = `https://github.com/${config.githubOwner ?? GITHUB_OWNER}/${config.githubRepo ?? GITHUB_REPO}/releases/latest`
+  const githubOwner = config.githubOwner ?? GITHUB_OWNER
+  const githubRepo = config.githubRepo ?? GITHUB_REPO
+  const usesDefaultRepository = githubOwner === GITHUB_OWNER && githubRepo === GITHUB_REPO
+  const releaseIndexEndpoint = resolveHTTPSURL(
+    config.releaseIndexURL,
+    usesDefaultRepository
+      ? RELEASE_INDEX_URL
+      : `https://${githubOwner.toLowerCase()}.github.io/${githubRepo}/releases.json`,
+  )
+  const releaseEndpoint = resolveHTTPSURL(
+    config.releaseAPIURL,
+    usesDefaultRepository
+      ? RELEASE_API_URL
+      : `https://api.github.com/repos/${githubOwner}/${githubRepo}/releases/latest`,
+  )
+  const releasesPageURL = `https://github.com/${githubOwner}/${githubRepo}/releases/latest`
   let readClientStatus = () => ({ phase: 'idle', productName })
   let requestClientDownload = async () => false
   ctx.effect(() => {
@@ -366,7 +394,8 @@ export function apply(ctx, config) {
             currentVersion: adapter.currentVersion,
             signal: controller.signal,
             request: adapter.request,
-            endpoint: releaseEndpoint,
+            endpoint: releaseIndexEndpoint,
+            fallbackEndpoint: releaseEndpoint,
             userAgent: productName,
           })
         } catch {
@@ -650,6 +679,29 @@ function parseVersionResponse(body) {
   } catch {
     return null
   }
+  const releases = Array.isArray(value) ? value : [value]
+  let selected = null
+  for (const release of releases) {
+    const parsed = parseStableRelease(release)
+    if (parsed === null) continue
+    if (selected === null || compareParsedSemVer(parsed.latest, selected.latest) > 0) {
+      selected = parsed
+    }
+  }
+  return selected
+}
+
+function resolveHTTPSURL(configured, fallback) {
+  if (typeof configured !== 'string' || configured.trim() === '') return fallback
+  try {
+    const url = new URL(configured.trim())
+    return url.protocol === 'https:' ? url.href : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function parseStableRelease(value) {
   if (!isRecord(value)
     || value.draft !== false
     || value.prerelease !== false

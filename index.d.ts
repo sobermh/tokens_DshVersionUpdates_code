@@ -43,6 +43,10 @@ export interface Config {
   githubOwner: string
   /** GitHub repository name of the release source; defaults to identity.js. */
   githubRepo: string
+  /** HTTPS Release index override; empty derives the GitHub Pages URL from githubOwner/githubRepo. */
+  releaseIndexURL?: string
+  /** HTTPS fallback API override; empty derives the GitHub API URL from githubOwner/githubRepo. */
+  releaseAPIURL?: string
 }
 
 /** Callable configuration validator supplied by Schemastery. */
@@ -109,6 +113,7 @@ export const name: string
 export const inject: readonly ['desktopRuntime']
 export const Config: ConfigSchema
 export const RELEASE_ENDPOINT: string
+export const RELEASE_INDEX_ENDPOINT: string
 export const MAX_VERSION_RESPONSE_BYTES: number
 
 export function parseSemVer(input: string): ParsedSemVer | null
@@ -118,6 +123,7 @@ export function checkForStableUpdate(options: {
   signal?: AbortSignal
   request?: UpdateRequest
   endpoint?: string
+  fallbackEndpoint?: string
   userAgent?: string
 }): Promise<UpdateCheckResult | null>
 export interface ManualCheckDialog {

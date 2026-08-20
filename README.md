@@ -1,16 +1,34 @@
 # TokensHarness Updates
 
-`@tokens/dsh-version-updates` 是 TokensHarness 的独立 Cordis Host 插件。它只读取公开仓库 [`TokensAPI/tokens_TokensHarness_code`](https://github.com/TokensAPI/tokens_TokensHarness_code) 的 latest GitHub Release，不使用 npm 作为产品版本源。
+`@tokens/dsh-version-updates` 是 TokensHarness 的独立 Cordis Host 插件。它优先读取公开的 GitHub Pages `releases.json`，从中选择 `draft=false`、`prerelease=false` 的最高稳定版本；索引不可用时降级读取 [`TokensAPI/tokens_TokensHarness_code`](https://github.com/TokensAPI/tokens_TokensHarness_code) 的 latest GitHub Release API，不使用 npm 作为产品版本源。
 
 插件通过 `desktopRuntime` 使用 TokensHarness 提供的原生托盘、网络和确认对话框能力，并自行流式下载、校验和打开 Windows / macOS 安装包。它负责定时检查、手工检查、版本比较和提示历史。
 
 发现可安装的新版本后，浏览器客户端会在侧栏底部、设置入口上方显示下载按钮；下载期间同一位置显示实时百分比。侧栏折叠时保留圆形下载图标和进度环，因此 macOS 不依赖系统托盘也能看到更新状态并开始下载。
 
-当前产品版本以该仓库的 latest Release 为准。Release 标签必须使用 `v<version>`，并发布以下安装包：
+当前产品版本以该仓库最高的正式稳定 Release 为准。Release 标签必须使用 `v<version>`，并发布以下安装包：
 
 - `TokensHarness-<version>-windows-amd64-installer.exe`
 - `TokensHarness-<version>-macos-arm64-installer.dmg`
 - `TokensHarness-<version>-macos-amd64-installer.dmg`
+
+## 版本源地址
+
+默认主地址由 `githubOwner`、`githubRepo` 自动派生为 GitHub Pages
+`releases.json`，降级地址自动派生为 GitHub latest Release API。需要换域名、
+镜像或自建更新服务时，可以直接覆盖两个 HTTPS 地址：
+
+```yaml
+- id: tokens-version-updates
+  config:
+    releaseIndexURL: https://updates.example.com/releases.json
+    releaseAPIURL: https://updates.example.com/releases/latest
+```
+
+`releaseIndexURL` 是优先读取的版本索引，`releaseAPIURL` 仅在主地址请求或解析失败时
+使用。两个内置默认地址集中写在 `identity.js`；任一字段留空都会继续使用默认地址，
+修改了 `githubOwner` / `githubRepo` 时则按新仓库自动派生。无效地址或非 HTTPS 地址
+也会回退到对应默认值。
 
 ## 自动下载的适用范围
 

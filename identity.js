@@ -24,9 +24,19 @@ export const PLUGIN_NAME = 'tokens-dsh-version-updates'
 export const GITHUB_OWNER = 'TokensAPI'
 export const GITHUB_REPO = 'tokens_TokensHarness_code'
 
-/** 由发布仓库派生的 latest Release 端点。 */
-export const RELEASE_ENDPOINT =
-  `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`
+/** Pages Release 索引默认地址；可被 config.releaseIndexURL 覆盖。 */
+export const RELEASE_INDEX_URL =
+  'https://tokensapi.github.io/tokens_TokensHarness_code/releases.json'
+
+/** GitHub latest Release API 默认地址；可被 config.releaseAPIURL 覆盖。 */
+export const RELEASE_API_URL =
+  'https://api.github.com/repos/TokensAPI/tokens_TokensHarness_code/releases/latest'
+
+/** 兼容既有调用方的 Pages Release 索引常量。 */
+export const RELEASE_INDEX_ENDPOINT = RELEASE_INDEX_URL
+
+/** 兼容既有调用方的 GitHub latest Release API 常量。 */
+export const RELEASE_ENDPOINT = RELEASE_API_URL
 
 /**
  * 下载镜像前缀：空串直连 GitHub 资产地址；设为 HTTPS 前缀时替换资产 URL 的

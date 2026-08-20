@@ -12,6 +12,7 @@ import {
   Config,
   MAX_VERSION_RESPONSE_BYTES,
   RELEASE_ENDPOINT,
+  RELEASE_INDEX_ENDPOINT,
   apply,
   checkForStableUpdate,
   compareSemVerVersions,
@@ -444,7 +445,7 @@ test('47 checkForStableUpdate rejects a missing draft or prerelease flag', async
   }), null)
 })
 
-test('48 checkForStableUpdate rejects a JSON array body', async () => {
+test('48 checkForStableUpdate rejects an index without a stable release', async () => {
   assert.equal(await checkForStableUpdate({
     currentVersion: '0.1.0',
     request: async () => new Response('[]', { status: 200 }),
@@ -885,6 +886,8 @@ test('83 Config fills every field from identity defaults', () => {
   assert.equal(config.requestTimeoutMs, 15_000)
   assert.equal(config.productName, 'TokensHarness')
   assert.equal(config.downloadBaseURL, '')
+  assert.equal(config.releaseIndexURL, undefined)
+  assert.equal(config.releaseAPIURL, undefined)
 })
 
 test('84 Config accepts explicit in-range overrides', () => {
@@ -915,9 +918,12 @@ test('89 Config rejects wrongly typed fields', () => {
   assert.throws(() => Config({ enabled: 'yes' }))
   assert.throws(() => Config({ productName: 42 }))
   assert.throws(() => Config({ intervalMs: '1000' }))
+  assert.throws(() => Config({ releaseIndexURL: 42 }))
+  assert.throws(() => Config({ releaseAPIURL: false }))
 })
 
-test('90 RELEASE_ENDPOINT points at the GitHub latest-release API', () => {
+test('90 release endpoints use Pages first and the GitHub API as fallback', () => {
+  assert.match(RELEASE_INDEX_ENDPOINT, /^https:\/\/[^/]+\.github\.io\/[^/]+\/releases\.json$/u)
   assert.match(RELEASE_ENDPOINT, /^https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+\/releases\/latest$/u)
 })
 
@@ -1419,6 +1425,10 @@ function downloadableRelease(version, payload, platform = process.platform, arch
   }
 }
 
+function isReleaseMetadataRequest(url) {
+  return url.endsWith('/releases.json') || url.endsWith('/releases/latest')
+}
+
 const SUPPORTED_HOST = selectInstallerAsset(
   [{ name: `x-${process.platform === 'win32' ? 'windows-amd64-installer.exe' : 'macos-arm64-installer.dmg'}`, url: 'https://github.com/x', size: 1, digest: null }],
 ) !== null
@@ -1433,7 +1443,7 @@ test('122 confirming a download fetches and verifies the installer end to end', 
     const host = harness({
       root,
       confirm: true,
-      request: async (url) => url.endsWith('/releases/latest')
+      request: async (url) => isReleaseMetadataRequest(url)
         ? release({
           tag_name: 'v0.2.0',
           assets: [{
@@ -1464,7 +1474,7 @@ test('123 a tampered installer is never written to its final path', {
     const host = harness({
       root,
       confirm: true,
-      request: async (url) => url.endsWith('/releases/latest')
+      request: async (url) => isReleaseMetadataRequest(url)
         ? release({
           tag_name: 'v0.2.0',
           assets: [{
@@ -1515,7 +1525,7 @@ test('125 declining the confirmation dialog downloads nothing', async () => {
       root,
       confirm: false,
       request: async (url) => {
-        if (url.endsWith('/releases/latest')) {
+        if (isReleaseMetadataRequest(url)) {
           return release({
             tag_name: 'v0.2.0',
             assets: [{
@@ -1552,7 +1562,7 @@ test('126 the download mirror prefix rewrites the GitHub asset host', {
       confirm: true,
       request: async (url) => {
         seen.push(url)
-        return url.endsWith('/releases/latest')
+        return isReleaseMetadataRequest(url)
           ? release({
             tag_name: 'v0.2.0',
             assets: [{
@@ -1591,7 +1601,7 @@ test('127 a non-HTTPS mirror prefix is ignored and GitHub is used directly', {
       confirm: true,
       request: async (url) => {
         seen.push(url)
-        return url.endsWith('/releases/latest')
+        return isReleaseMetadataRequest(url)
           ? release({
             tag_name: 'v0.2.0',
             assets: [{
@@ -1627,7 +1637,7 @@ test('128 the tray reports the downloading state while an installer transfers', 
       root,
       confirm: true,
       request: async (url) => {
-        if (url.endsWith('/releases/latest')) {
+        if (isReleaseMetadataRequest(url)) {
           return release({
             tag_name: 'v0.2.0',
             assets: [{
@@ -1925,7 +1935,7 @@ test('150 an installer already on disk is reused without any network download', 
       root,
       confirm: true,
       request: async (url) => {
-        if (url.endsWith('/releases/latest')) {
+        if (isReleaseMetadataRequest(url)) {
           return release({
             tag_name: 'v0.2.0',
             assets: [{
@@ -1965,7 +1975,7 @@ test('151 a tampered installer on disk is refetched instead of being trusted', {
       root,
       confirm: true,
       request: async (url) => {
-        if (url.endsWith('/releases/latest')) {
+        if (isReleaseMetadataRequest(url)) {
           return release({
             tag_name: 'v0.2.0',
             assets: [{
@@ -2104,7 +2114,7 @@ test('164 a configured absolute downloadDirectory receives the installer', {
     const host = harness({
       root,
       confirm: true,
-      request: async (url) => url.endsWith('/releases/latest')
+      request: async (url) => isReleaseMetadataRequest(url)
         ? release({
           tag_name: 'v0.2.0',
           assets: [{
@@ -2141,7 +2151,7 @@ test('165 a relative downloadDirectory writes to the default location, never the
     const host = harness({
       root,
       confirm: true,
-      request: async (url) => url.endsWith('/releases/latest')
+      request: async (url) => isReleaseMetadataRequest(url)
         ? release({
           tag_name: 'v0.2.0',
           assets: [{
@@ -2213,7 +2223,7 @@ test('168 client RPC exposes an available update and starts its download without
       connection: true,
       confirm: false,
       request: async (url) => {
-        if (url.endsWith('/releases/latest')) {
+        if (isReleaseMetadataRequest(url)) {
           return release({
             tag_name: 'v0.2.0',
             assets: [{

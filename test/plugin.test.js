@@ -6,6 +6,7 @@ import test from 'node:test'
 import {
   Config,
   RELEASE_ENDPOINT,
+  RELEASE_INDEX_ENDPOINT,
   apply,
   checkForStableUpdate,
   compareSemVerVersions,
@@ -26,13 +27,18 @@ test('parses and compares strict versions', () => {
   assert.equal(compareSemVerVersions('0.2.0', '0.1.9'), 1)
 })
 
-test('checks only the public TokensHarness latest Release', async () => {
+test('checks the public TokensHarness release index by default', async () => {
   const calls = []
   const result = await checkForStableUpdate({
     currentVersion: '0.1.0',
     request: async (url, init) => {
       calls.push({ url, init })
-      return releaseResponse('0.2.0')
+      return Response.json([
+        { tag_name: 'v9.0.0', draft: true, prerelease: false },
+        { tag_name: 'v0.3.0-rc.1', draft: false, prerelease: true },
+        { tag_name: 'v0.1.9', draft: false, prerelease: false },
+        { tag_name: 'v0.2.0', draft: false, prerelease: false },
+      ])
     },
   })
 
@@ -43,8 +49,24 @@ test('checks only the public TokensHarness latest Release', async () => {
     assets: [],
   })
   assert.equal(calls.length, 1)
-  assert.equal(calls[0].url, RELEASE_ENDPOINT)
+  assert.equal(calls[0].url, RELEASE_INDEX_ENDPOINT)
   assert.equal(new Headers(calls[0].init.headers).get('user-agent'), 'TokensHarness')
+})
+
+test('falls back to the GitHub latest Release API when the index is unavailable', async () => {
+  const calls = []
+  const result = await checkForStableUpdate({
+    currentVersion: '0.1.0',
+    request: async (url) => {
+      calls.push(url)
+      return url === RELEASE_INDEX_ENDPOINT
+        ? new Response('{}', { status: 503 })
+        : releaseResponse('0.2.0')
+    },
+  })
+
+  assert.equal(result?.latestVersion, '0.2.0')
+  assert.deepEqual(calls, [RELEASE_INDEX_ENDPOINT, RELEASE_ENDPOINT])
 })
 
 test('registers one manual update tray command through desktopRuntime', async () => {
@@ -145,7 +167,7 @@ test('downloads, verifies, and rejects installers by SHA-256', async () => {
   }
 })
 
-test('config overrides product name and release source', async () => {
+test('config overrides product name and release source URLs', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-version-updates-cfg-'))
   const requested = []
   let tray, disposer
@@ -158,7 +180,9 @@ test('config overrides product name and release source', async () => {
         statePath: join(root, 'state.json'),
         request: async (url, init) => {
           requested.push({ url, agent: new Headers(init.headers).get('user-agent') })
-          return releaseResponse('0.2.0')
+          return url === 'https://updates.example.test/releases.json'
+            ? new Response('{}', { status: 503 })
+            : releaseResponse('0.2.0')
         },
         async confirmDownload() { return false },
         async showManualCheckResult() {},
@@ -175,9 +199,14 @@ test('config overrides product name and release source', async () => {
       productName: 'MyBrand',
       githubOwner: 'my-org',
       githubRepo: 'my_repo',
+      releaseIndexURL: 'https://updates.example.test/releases.json',
+      releaseAPIURL: 'https://fallback.example.test/releases/latest',
     }))
     await tray.invoke()
-    assert.equal(requested[0].url, 'https://api.github.com/repos/my-org/my_repo/releases/latest')
+    assert.deepEqual(requested.map(item => item.url), [
+      'https://updates.example.test/releases.json',
+      'https://fallback.example.test/releases/latest',
+    ])
     assert.equal(requested[0].agent, 'MyBrand')
     assert.equal(tray.label(), 'MyBrand 0.2.0 Available')
     await disposer()
