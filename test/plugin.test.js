@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -51,6 +51,13 @@ test('checks the public TokensHarness release index by default', async () => {
   assert.equal(calls.length, 1)
   assert.equal(calls[0].url, RELEASE_INDEX_ENDPOINT)
   assert.equal(new Headers(calls[0].init.headers).get('user-agent'), 'TokensHarness')
+})
+
+test('wide update action anchors after other footer actions without consuming their row', async () => {
+  const styles = await readFile(new URL('../src/client/styles.ts', import.meta.url), 'utf8')
+  assert.match(styles, /div:has\(> \[data-slot="sidebar\.footer\.action"\] > \.tokensVersionUpdateRoot\)\s*\{[^}]*position: relative;[^}]*flex-direction: column;/su)
+  assert.match(styles, /\.tokensVersionUpdateWide\s*\{[^}]*position: static;[^}]*flex: 0 0 0;[^}]*width: 0;[^}]*height: 0;/su)
+  assert.match(styles, /\.tokensVersionUpdateWide \.tokensVersionUpdateButton\s*\{[^}]*position: absolute;[^}]*top: calc\(100% \+ 13px\);[^}]*right: 0;/su)
 })
 
 test('falls back to the GitHub latest Release API when the index is unavailable', async () => {

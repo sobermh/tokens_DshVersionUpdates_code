@@ -52,15 +52,22 @@ var STYLES = `
 .tokensVersionUpdateButton:hover { background: var(--dsw-alias-interactive-bg-hover); }
 .tokensVersionUpdateButton:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
 .tokensVersionUpdateButton:disabled { cursor: default; opacity: 1; }
-.tokensVersionUpdateWide {
+/* The slot anchor is display: contents; its flex host must own the overlay geometry. */
+div:has(> [data-slot="sidebar.footer.action"] > .tokensVersionUpdateRoot) {
   position: relative;
-  z-index: 2;
+  flex-direction: column;
+}
+.tokensVersionUpdateWide {
+  position: static;
+  flex: 0 0 0;
+  width: 0;
   height: 0;
   pointer-events: none;
 }
 .tokensVersionUpdateWide .tokensVersionUpdateButton {
   position: absolute;
-  top: 9px;
+  z-index: 2;
+  top: calc(100% + 13px);
   right: 0;
   gap: 6px;
   width: auto;
