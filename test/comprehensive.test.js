@@ -6,10 +6,12 @@ import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
+import { Readable } from 'node:stream'
 import test from 'node:test'
 
 import {
   Config,
+  DESKTOP_UPDATE_CHECK_PATH,
   MAX_VERSION_RESPONSE_BYTES,
   RELEASE_ENDPOINT,
   RELEASE_INDEX_ENDPOINT,
@@ -57,6 +59,35 @@ async function tempDir(tag) {
   return mkdtemp(join(tmpdir(), `dvu-${tag}-`))
 }
 
+function desktopUpdateRequest(value = {}, options = {}) {
+  const body = typeof value === 'string' ? value : JSON.stringify(value)
+  const req = Readable.from([body])
+  req.method = options.method ?? 'POST'
+  req.headers = {
+    host: '127.0.0.1:43120',
+    origin: 'http://127.0.0.1:43120',
+    'sec-fetch-site': 'same-origin',
+    'content-type': 'application/json',
+    'content-length': String(Buffer.byteLength(body)),
+    ...options.headers,
+  }
+  Object.defineProperty(req, 'socket', {
+    value: { remoteAddress: options.remoteAddress ?? '127.0.0.1' },
+  })
+  return req
+}
+
+function desktopUpdateResponse() {
+  const headers = new Map()
+  return {
+    statusCode: 0,
+    body: '',
+    headers,
+    setHeader(name, value) { headers.set(name.toLowerCase(), String(value)) },
+    end(value = '') { this.body = String(value) },
+  }
+}
+
 /**
  * 构造一个可观测的 desktopRuntime 宿主，捕获托盘项与 effect 卸载器。
  */
@@ -64,6 +95,7 @@ function harness(options = {}) {
   const log = { manual: [], confirmed: [], requests: [] }
   let tray
   let rpcHandler
+  let updateRoute
   const disposers = []
   const registration = {
     refreshCount: 0,
@@ -92,6 +124,13 @@ function harness(options = {}) {
     desktopRuntime: {
       updates: adapter,
       registerTrayItem(item) { tray = item; return registration },
+    },
+    webServer: {
+      port: 43120,
+      register(route) {
+        updateRoute = route
+        return () => { updateRoute = undefined }
+      },
     },
     effect(register) {
       const disposer = register()
@@ -123,6 +162,7 @@ function harness(options = {}) {
       apply(ctx, Config({ enabled: false, downloadDirectory: options.root, ...config }))
       return {
         tray,
+        updateRoute: () => updateRoute,
         rpc: async (endpoint, payload = {}) => {
           assert.notEqual(rpcHandler, undefined, 'RPC channel must be registered')
           return rpcHandler(endpoint, payload)
@@ -2258,6 +2298,67 @@ test('168 client RPC exposes an available update and starts its download without
 
     openGate()
     assert.deepEqual(await pending, { ok: true, value: { started: true } })
+    await dispose()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('169 Desktop top button and tray share one manual update task', async () => {
+  const root = await tempDir('desktop-route')
+  try {
+    let releaseRequestCount = 0
+    let releaseRequestStarted
+    let finishReleaseRequest
+    const started = new Promise(resolve => { releaseRequestStarted = resolve })
+    const gate = new Promise(resolve => { finishReleaseRequest = resolve })
+    const host = harness({
+      root,
+      request: async () => {
+        releaseRequestCount += 1
+        releaseRequestStarted()
+        await gate
+        return release({ tag_name: 'v0.1.0' })
+      },
+    })
+    const { tray, updateRoute, dispose } = host.start()
+    assert.equal(updateRoute().path, DESKTOP_UPDATE_CHECK_PATH)
+    assert.equal(updateRoute().kind, 'exact')
+
+    const response = desktopUpdateResponse()
+    const fromTopButton = updateRoute().handler(desktopUpdateRequest(), response)
+    await started
+    const fromTray = tray.invoke()
+    finishReleaseRequest()
+    await Promise.all([fromTopButton, fromTray])
+
+    assert.equal(releaseRequestCount, 1)
+    assert.equal(response.statusCode, 200)
+    assert.deepEqual(JSON.parse(response.body), { accepted: true })
+    assert.equal(host.log.manual.length, 1)
+    await dispose()
+    assert.equal(updateRoute(), undefined)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('170 Desktop update route rejects untrusted and non-empty requests', async () => {
+  const root = await tempDir('desktop-route-guard')
+  try {
+    const host = harness({ root })
+    const { updateRoute, dispose } = host.start()
+
+    const crossOrigin = desktopUpdateResponse()
+    await updateRoute().handler(desktopUpdateRequest({}, {
+      headers: { origin: 'https://example.com' },
+    }), crossOrigin)
+    assert.equal(crossOrigin.statusCode, 403)
+
+    const nonEmpty = desktopUpdateResponse()
+    await updateRoute().handler(desktopUpdateRequest({ version: '9.9.9' }), nonEmpty)
+    assert.equal(nonEmpty.statusCode, 400)
+    assert.equal(host.log.requests.length, 0)
     await dispose()
   } finally {
     await rm(root, { recursive: true, force: true })

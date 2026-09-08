@@ -48,16 +48,18 @@ export {
 /** Stable Cordis plugin name. */
 export const name = PLUGIN_NAME
 
-/** Native adapter required for network, tray, confirmation, and installer access. */
-export const inject = ['desktopRuntime']
+/** Native adapter and private loopback server required by the update surfaces. */
+export const inject = ['desktopRuntime', 'webServer']
 
 /** Maximum response body bytes accepted from a Release document or index. */
 export const MAX_VERSION_RESPONSE_BYTES = 2 * 1024 * 1024
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 const MAX_STATE_BYTES = 4 * 1024
+const MAX_DESKTOP_UPDATE_BODY_BYTES = 16 * 1024
 const EMPTY_STATE = { version: 2 }
 const UPDATE_RPC_CHANNEL = '/tokens-version-updates'
+export const DESKTOP_UPDATE_CHECK_PATH = '/api/desktop/updates/check'
 const SEMVER_PATTERN =
   /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/u
 
@@ -217,6 +219,37 @@ export function describeManualCheck(result, options) {
     title: `${productName} Is Up to Date`,
     message: `No newer version of ${productName} is available.`,
     detail: `Installed version: ${result.currentVersion}`,
+  }
+}
+
+/* ====================================================================
+ * Desktop 顶部版本按钮兼容路由
+ * 新版 Desktop 的版本按钮固定请求此同源 HTTP 路径。上游更新插件被
+ * 产品停用后，由本插件注册同一契约，并转交给与托盘共用的手动检查。
+ * ==================================================================== */
+
+/**
+ * Handle the private same-origin Desktop update request.
+ * @param {import('node:http').IncomingMessage} req Incoming loopback request.
+ * @param {import('node:http').ServerResponse} res Outgoing JSON response.
+ * @param {string} expectedOrigin Exact renderer origin.
+ * @param {() => Promise<void>} checkNow Shared interactive update flow.
+ */
+export async function handleDesktopUpdateCheckRequest(req, res, expectedOrigin, checkNow) {
+  if (req.method !== 'POST') return finishUpdateJson(res, 405, { error: 'method not allowed' }, 'POST')
+  if (!isSameOriginLoopbackRequest(req, expectedOrigin)) {
+    return finishUpdateJson(res, 403, { error: 'forbidden' })
+  }
+  const value = await parseDesktopUpdateBody(req, res)
+  if (value === INVALID_UPDATE_BODY) return
+  if (!isEmptyRecord(value)) {
+    return finishUpdateJson(res, 400, { error: 'invalid update check request' })
+  }
+  try {
+    await checkNow()
+    finishUpdateJson(res, 200, { accepted: true })
+  } catch {
+    finishUpdateJson(res, 500, { error: 'updates could not be checked' })
   }
 }
 
@@ -604,6 +637,18 @@ export function apply(ctx, config) {
     })
     refreshTray = registration.refresh
 
+    const rendererOrigin = `http://127.0.0.1:${String(ctx.webServer.port)}`
+    const unregisterUpdateCheckRoute = ctx.webServer.register({
+      kind: 'exact',
+      path: DESKTOP_UPDATE_CHECK_PATH,
+      handler: (req, res) => handleDesktopUpdateCheckRequest(
+        req,
+        res,
+        rendererOrigin,
+        runManualCheck,
+      ),
+    })
+
     if (adapter.isPackaged && config.enabled) scheduleBackgroundCheck(config.initialDelayMs)
 
     return async () => {
@@ -614,6 +659,7 @@ export function apply(ctx, config) {
       if (requestTimer !== undefined) clearTimeout(requestTimer)
       requestController?.abort()
       downloadController?.abort()
+      unregisterUpdateCheckRoute()
       registration.dispose()
       const pending = [stateReady]
       if (inFlight !== undefined) pending.push(inFlight)
@@ -836,6 +882,92 @@ function isRecord(value) {
 
 function isEnoent(value) {
   return isRecord(value) && value.code === 'ENOENT'
+}
+
+const INVALID_UPDATE_BODY = Symbol('invalid update body')
+
+function finishUpdateJson(res, statusCode, value, allow) {
+  res.statusCode = statusCode
+  res.setHeader('cache-control', 'no-store')
+  res.setHeader('content-type', 'application/json; charset=utf-8')
+  res.setHeader('x-content-type-options', 'nosniff')
+  if (allow !== undefined) res.setHeader('allow', allow)
+  res.end(JSON.stringify(value))
+}
+
+function isLoopbackAddress(address) {
+  if (address === '::1' || address === '127.0.0.1') return true
+  if (typeof address !== 'string') return false
+  if (address.startsWith('::ffff:')) return address.slice('::ffff:'.length).startsWith('127.')
+  return address.startsWith('127.')
+}
+
+function parseExpectedLoopbackOrigin(value) {
+  try {
+    const url = new URL(value)
+    if (url.origin !== value || url.protocol !== 'http:'
+      || url.username !== '' || url.password !== ''
+      || (url.hostname !== '127.0.0.1' && url.hostname !== '[::1]')) return null
+    return url
+  } catch {
+    return null
+  }
+}
+
+function exactOrigin(value) {
+  if (typeof value !== 'string') return undefined
+  try {
+    const url = new URL(value)
+    return url.origin === value ? value : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function isSameOriginLoopbackRequest(req, expectedOrigin) {
+  const expected = parseExpectedLoopbackOrigin(expectedOrigin)
+  if (expected === null || !isLoopbackAddress(req.socket.remoteAddress)) return false
+  if (req.headers.host?.toLowerCase() !== expected.host.toLowerCase()) return false
+  if (exactOrigin(req.headers.origin) !== expected.origin) return false
+  return req.headers['sec-fetch-site'] === undefined || req.headers['sec-fetch-site'] === 'same-origin'
+}
+
+async function parseDesktopUpdateBody(req, res) {
+  if (req.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') {
+    finishUpdateJson(res, 415, { error: 'content type must be application/json' })
+    return INVALID_UPDATE_BODY
+  }
+  const declaredLength = req.headers['content-length']
+  if (declaredLength !== undefined
+    && (!/^\d+$/u.test(declaredLength) || Number(declaredLength) > MAX_DESKTOP_UPDATE_BODY_BYTES)) {
+    const tooLarge = /^\d+$/u.test(declaredLength)
+      && Number(declaredLength) > MAX_DESKTOP_UPDATE_BODY_BYTES
+    finishUpdateJson(res, tooLarge ? 413 : 400, {
+      error: tooLarge ? 'request body is too large' : 'invalid JSON request',
+    })
+    return INVALID_UPDATE_BODY
+  }
+  try {
+    let size = 0
+    const chunks = []
+    for await (const chunk of req) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      size += buffer.byteLength
+      if (size > MAX_DESKTOP_UPDATE_BODY_BYTES) {
+        finishUpdateJson(res, 413, { error: 'request body is too large' })
+        return INVALID_UPDATE_BODY
+      }
+      chunks.push(buffer)
+    }
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  } catch {
+    finishUpdateJson(res, 400, { error: 'invalid JSON request' })
+    return INVALID_UPDATE_BODY
+  }
+}
+
+function isEmptyRecord(value) {
+  return isRecord(value) && Object.keys(value).length === 0
 }
 
 function rpcSuccess(value) {

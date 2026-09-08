@@ -86,9 +86,26 @@ export interface UpdateDesktopRuntime {
   registerTrayItem(item: UpdateTrayItem): UpdateTrayItemRegistration
 }
 
+/** Exact private route registered on the Desktop loopback server. */
+export interface UpdateWebRoute {
+  readonly kind: 'exact'
+  readonly path: string
+  readonly handler: (
+    req: import('node:http').IncomingMessage,
+    res: import('node:http').ServerResponse,
+  ) => void | Promise<void>
+}
+
+/** Minimal loopback WebServer surface consumed by this plugin. */
+export interface UpdateWebServer {
+  readonly port: number
+  register(route: UpdateWebRoute): () => void
+}
+
 /** Minimal Cordis-compatible Host context required by this plugin. */
 export interface UpdatePluginContext {
   readonly desktopRuntime: UpdateDesktopRuntime
+  readonly webServer: UpdateWebServer
   inject?(
     services: readonly ['connection'],
     apply: (ctx: UpdatePluginContext & {
@@ -110,14 +127,21 @@ export interface UpdatePluginContext {
 }
 
 export const name: string
-export const inject: readonly ['desktopRuntime']
+export const inject: readonly ['desktopRuntime', 'webServer']
 export const Config: ConfigSchema
 export const RELEASE_ENDPOINT: string
 export const RELEASE_INDEX_ENDPOINT: string
+export const DESKTOP_UPDATE_CHECK_PATH: '/api/desktop/updates/check'
 export const MAX_VERSION_RESPONSE_BYTES: number
 
 export function parseSemVer(input: string): ParsedSemVer | null
 export function compareSemVerVersions(left: string, right: string): number | null
+export function handleDesktopUpdateCheckRequest(
+  req: import('node:http').IncomingMessage,
+  res: import('node:http').ServerResponse,
+  expectedOrigin: string,
+  checkNow: () => Promise<void>,
+): Promise<void>
 export function checkForStableUpdate(options: {
   currentVersion: string
   signal?: AbortSignal

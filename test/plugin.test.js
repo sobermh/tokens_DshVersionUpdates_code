@@ -99,6 +99,10 @@ test('registers one manual update tray command through desktopRuntime', async ()
         return registration
       },
     },
+    webServer: {
+      port: 43120,
+      register() { return () => {} },
+    },
     effect(register) {
       disposer = register()
     },
@@ -196,6 +200,10 @@ test('config overrides product name and release source URLs', async () => {
         async downloadAndOpen() {},
       },
       registerTrayItem(item) { tray = item; return { refresh() {}, dispose() {} } },
+    },
+    webServer: {
+      port: 43120,
+      register() { return () => {} },
     },
     effect(register) { disposer = register() },
   }
