@@ -195,7 +195,7 @@ export function downloadInstaller(options: {
   signal?: AbortSignal
   onProgress?: (progress: { downloadedBytes: number; totalBytes: number }) => void
 }): Promise<string>
-export function openInstaller(path: string, platform?: string): void
+export function openInstaller(path: string, platform?: string): Promise<void>
 export function verifyDownloadedInstaller(
   path: string,
   asset: ReleaseAsset,

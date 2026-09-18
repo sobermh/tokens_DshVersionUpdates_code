@@ -1,6 +1,8 @@
 /** 全面正反用例：SemVer、Release 解析、资产选择、下载校验、插件生命周期。 */
 
 import assert from 'node:assert/strict'
+import childProcess from 'node:child_process'
+import { syncBuiltinESMExports } from 'node:module'
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
@@ -157,6 +159,8 @@ function harness(options = {}) {
     registration,
     adapter,
     start(config = {}) {
+      const originalFetch = globalThis.fetch
+      globalThis.fetch = options.downloadRequest ?? adapter.request
       // 默认下载目录钉在本次临时目录：真实默认位置在应用数据目录下，
       // 测试绝不能往那里写。关心默认位置的用例自行覆盖这个字段。
       apply(ctx, Config({ enabled: false, downloadDirectory: options.root, ...config }))
@@ -168,6 +172,7 @@ function harness(options = {}) {
           return rpcHandler(endpoint, payload)
         },
         dispose: async () => {
+          globalThis.fetch = originalFetch
           for (const disposer of disposers.reverse()) await disposer()
         },
       }
@@ -176,6 +181,59 @@ function harness(options = {}) {
 }
 
 /* ==================== 1. SemVer 解析：正例 ==================== */
+
+test('installer bytes bypass the text-only Host bridge', { skip: !['win32', 'darwin'].includes(process.platform) }, async (t) => {
+  mockInstallerLaunch(t)
+  const root = await tempDir('binary-bridge')
+  const payload = Buffer.from([0x4d, 0x5a, 0x90, 0xff, 0, 0xfe])
+  const asset = downloadableRelease('0.2.0', payload)
+  let downloads = 0
+  const host = harness({
+    root, connection: true,
+    request: async (url) => {
+      assert.ok(isReleaseMetadataRequest(url), 'binary requests must not reach Host IPC')
+      return release({ assets: [{ ...asset, browser_download_url: `https://github.com/o/r/${asset.name}` }] })
+    },
+    downloadRequest: async () => {
+      downloads += 1
+      return new Response(payload)
+    },
+  })
+  const { tray, rpc, dispose } = host.start()
+  try {
+    await tray.invoke()
+    assert.deepEqual(await rpc('download'), { ok: true, value: { started: true } })
+    assert.equal(downloads, 1)
+    assert.deepEqual(await readFile(join(root, '0.2.0', asset.name)), payload)
+  } finally {
+    await dispose()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+function mockInstallerLaunch(t) {
+  t.mock.method(childProcess, 'spawn', () => ({ once(event, callback) { if (event === 'spawn') queueMicrotask(callback) }, unref() {} }))
+  syncBuiltinESMExports()
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports() })
+}
+
+test('failed binary request does not report started true', { skip: !['win32', 'darwin'].includes(process.platform) }, async () => {
+  const root = await tempDir('binary-failure')
+  const asset = downloadableRelease('0.2.0', Buffer.from('bytes'))
+  const host = harness({
+    root, connection: true,
+    request: async () => release({ assets: [{ ...asset, browser_download_url: `https://github.com/o/r/${asset.name}` }] }),
+    downloadRequest: async () => { throw new Error('offline') },
+  })
+  const { tray, rpc, dispose } = host.start()
+  try {
+    await tray.invoke()
+    assert.deepEqual(await rpc('download'), { ok: true, value: { started: false } })
+  } finally {
+    await dispose()
+    await rm(root, { recursive: true, force: true })
+  }
+})
 
 test('01 parseSemVer accepts a plain stable version', () => {
   assert.deepEqual(parseSemVer('1.2.3'), {
@@ -911,9 +969,8 @@ test('81 downloadInstaller accepts and verifies an uppercase-hex digest', async 
   }
 })
 
-test('82 openInstaller never throws when the target cannot be executed', () => {
-  assert.doesNotThrow(() => { openInstaller(join(tmpdir(), 'definitely-missing-installer.exe'), 'win32') })
-  assert.doesNotThrow(() => { openInstaller(join(tmpdir(), 'definitely-missing-installer.dmg'), 'darwin') })
+test('82 openInstaller rejects when the target cannot be executed', async () => {
+  await assert.rejects(openInstaller(join(tmpdir(), 'definitely-missing-installer.exe'), 'win32'))
 })
 
 /* ==================== 9. 配置 Schema：正例与反例 ==================== */
@@ -2251,7 +2308,8 @@ test('167 downloadInstaller reports monotonic byte progress through completion',
 
 test('168 client RPC exposes an available update and starts its download without another confirmation', {
   skip: SUPPORTED_HOST ? false : 'unsupported host platform',
-}, async () => {
+}, async (t) => {
+  mockInstallerLaunch(t)
   const root = await tempDir('client-rpc')
   try {
     const payload = Buffer.from('client-download-bytes')

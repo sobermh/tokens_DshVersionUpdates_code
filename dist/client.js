@@ -198,7 +198,9 @@ function UpdateAction({ wide, readStatus, download }) {
       onClick: () => {
         if (downloading || starting) return;
         setStarting(true);
-        void download().catch(() => false).finally(() => {
+        void download().catch(() => false).then((completed) => {
+          if (!completed) window.alert(zh ? "\u66F4\u65B0\u672A\u5B8C\u6210\uFF0C\u8BF7\u91CD\u8BD5\u3002" : "The update did not complete. Please try again.");
+        }).finally(() => {
           setStarting(false);
           void refresh();
         });

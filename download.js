@@ -184,12 +184,13 @@ export async function downloadInstaller(options) {
  * @param {string} path Absolute installer path.
  * @param {string} [platform] Node platform identifier; defaults to the current process.
  */
-export function openInstaller(path, platform = process.platform) {
+export async function openInstaller(path, platform = process.platform) {
   const command = platform === 'darwin' ? 'open' : path
   const args = platform === 'darwin' ? [path] : []
   const child = spawn(command, args, { detached: true, stdio: 'ignore' })
-  child.on('error', () => {
-    // 安装器启动失败不致命：文件已下载完成，用户仍可手动运行。
+  await new Promise((resolve, reject) => {
+    child.once('error', reject)
+    child.once('spawn', resolve)
   })
   child.unref()
 }

@@ -102,7 +102,11 @@ function UpdateAction({ wide, readStatus, download }: UpdateActionProps) {
           onClick={() => {
             if (downloading || starting) return
             setStarting(true)
-            void download().catch(() => false).finally(() => {
+            void download().catch(() => false).then((completed) => {
+              if (!completed) window.alert(zh
+                ? '更新未完成，请重试。'
+                : 'The update did not complete. Please try again.')
+            }).finally(() => {
               setStarting(false)
               void refresh()
             })

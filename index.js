@@ -543,7 +543,8 @@ export function apply(ctx, config) {
             : await downloadInstaller({
               asset,
               url: rewriteDownloadURL(asset.url, config.downloadBaseURL),
-              request: adapter.request,
+              // Host update requests are text-only IPC; installer bytes must stay local.
+              request: globalThis.fetch,
               directory,
               signal: controller.signal,
               onProgress: (progress) => {
@@ -552,10 +553,12 @@ export function apply(ctx, config) {
               },
             })
           controller.signal.throwIfAborted()
-          openInstaller(path)
+          await openInstaller(path)
           await announceReady(version, path)
+          return true
         } catch {
-          // Download, filesystem, and installer handoff failures stay silent.
+          // Report failure to the sidebar without claiming a successful download.
+          return false
         } finally {
           if (downloadController === controller) downloadController = undefined
           downloadingVersion = undefined
@@ -582,8 +585,7 @@ export function apply(ctx, config) {
     requestClientDownload = async () => {
       const version = availableVersion
       if (disposed || version === undefined || !adapter.canDownload) return false
-      await startDownload(version, false)
-      return true
+      return await startDownload(version, false) === true
     }
 
     /* ------------------- 手动与后台两条触发路径 ------------------- */
