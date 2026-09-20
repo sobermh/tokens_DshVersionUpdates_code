@@ -1,0 +1,230 @@
+﻿"用例编号","所属模块","用例标题","前置条件","测试数据","操作步骤","预期结果","优先级","自动化状态","对应测试"
+"ENV-01","产物与兼容","候选安装包冷启动","候选包由正常打包流程生成；测试数据已备份","当前平台候选安装包；插件版本与commit","1. 安装候选包
+2. 冷启动并检查窗口及日志
+3. 完全退出后再次启动","无 ASAR 完整性错误、模块缺失、插件重复注册；窗口可操作，保存启动日志","P0","人工验收",""
+"ENV-02","产物与兼容","固定提交及完整Host链路一致","能检查实际包内插件；测试源可用","外层gitlink、product.json、包内插件commit；含非UTF-8字节测试数据","1. 核对三处插件提交
+2. 在完整Host中触发下载，测试伪资产时拦截安装器启动
+3. 核对原始字节与SHA-256","三处提交一致；安装包不通过 response.text() 桥接；文件字节与摘要正确。隔离 net.fetch 测试不算完整 Host 验证","P0","部分自动化","test/comprehensive.test.js :: installer bytes bypass the text-only Host bridge"
+"ENV-03","产物与兼容","线上旧版升级候选版","在测试机安装当前对外发布旧版；备份数据","旧版本C；可安装候选版本T，T>C","1. 在旧版内检查更新并下载T
+2. 完成安装并重启
+3. 检查版本和原测试数据；若失败记录受影响旧版与手动路线","旧客户端发现/下载/安装/重启可用；失败时写明受影响旧版本及手动升级方案","P0","人工验收",""
+"ENV-04","产物与兼容","开发态和不支持平台的能力提示","正常开发构建或不支持自动下载的平台","当前版本C；稳定目标T>C；未修改开发能力开关","1. 启动并观察后台是否轮询
+2. 手动检查T
+3. 核对提示与手动下载链接","不误显示自动下载能力；明确给出本产品的手动下载地址；默认开发态不后台轮询","P1","部分自动化","test/comprehensive.test.js :: 99 manual check does not prompt when the adapter cannot download
+test/comprehensive.test.js :: 114 an unpackaged build never schedules background polling
+test/comprehensive.test.js :: 138 a runtime that cannot download still reports the available version to the host adapter"
+"ENV-05","产物与兼容","发布品牌与来源无测试残留","可读取候选包有效配置；测试机可观察网络","产品品牌、仓库、资产URL；生产配置清单","1. 核对有效品牌和版本源
+2. 触发检查及下载并核对目标产品架构
+3. 检查无测试源、模拟版本和开发能力开关","品牌、仓库、架构正确；不下载上游 DSH 的安装包；不残留测试版本、测试源或开发能力开关","P0","人工验收",""
+"VER-01","版本选择","版本比较与不降级","独立测试索引可切换；版本值记录为C、T","C<T、C=T、C>T；0.1.9与0.1.10；打乱顺序的稳定版本列表","1. 分别加载三组索引并手动检查
+2. 检查乱序列表选择结果
+3. 对比0.1.9与0.1.10选择结果","仅更高版本提示更新；等于或更旧不降级；按 SemVer 数值比较，如 0.1.10 大于 0.1.9","P0","部分自动化","test/comprehensive.test.js :: 18 compareSemVerVersions orders by major segment
+test/comprehensive.test.js :: 19 compareSemVerVersions orders by minor segment
+test/comprehensive.test.js :: 20 compareSemVerVersions orders by patch segment
+test/comprehensive.test.js :: 21 compareSemVerVersions reports equality
+test/comprehensive.test.js :: 29 checkForStableUpdate reports an available newer release
+test/comprehensive.test.js :: 30 checkForStableUpdate reports up-to-date on an equal release
+test/comprehensive.test.js :: 31 checkForStableUpdate reports up-to-date when the release is older"
+"VER-02","版本选择","过滤预发布和草稿","独立HTTPS测试源；不修改生产Release","稳定T>C；更高prerelease/draft；另备仅含预发布的索引","1. 混合列表执行检查
+2. 核对选中版本
+3. 切换仅预发布索引再次检查","只选稳定 T；判断 Release 标志和标签，不依赖正文关键词；没有稳定版时不误报“已是最新”","P0","部分自动化","test/comprehensive.test.js :: 43 checkForStableUpdate rejects a draft release
+test/comprehensive.test.js :: 44 checkForStableUpdate rejects a prerelease release
+test/comprehensive.test.js :: 46 checkForStableUpdate rejects a prerelease tag on a stable release
+test/comprehensive.test.js :: 48 checkForStableUpdate rejects an index without a stable release"
+"VER-03","版本选择","拒绝非法版本文档","自动化夹具或独立测试源可逐项返回异常","非JSON、空数组、标志缺失、缺v前缀、预发布标签、非法UTF-8","1. 逐个提供异常文档
+2. 每组触发检查
+3. 记录拒绝/降级结果以及应用状态","非法条目被忽略或来源判失败；不崩溃，不安装非法版本","P1","部分自动化","test/comprehensive.test.js :: 42 checkForStableUpdate returns null on malformed JSON
+test/comprehensive.test.js :: 45 checkForStableUpdate rejects a tag without the v prefix
+test/comprehensive.test.js :: 47 checkForStableUpdate rejects a missing draft or prerelease flag
+test/comprehensive.test.js :: 48 checkForStableUpdate rejects an index without a stable release
+test/comprehensive.test.js :: 51 checkForStableUpdate rejects invalid UTF-8 in the response body"
+"VER-04","版本选择","下载前复查已变化的版本","已发现T但未下载；可更新测试索引","T撤回、T改为prerelease、出现更高稳定版三组","1. 显示T后逐组切换测试数据
+2. 点击下载
+3. 检查实际资产请求和返回值；刷新状态后重新操作","下载前复查；不继续安装过期目标；本次未完成返回 false，状态可刷新再操作","P0","待自动化",""
+"VER-05","版本选择","当前版本带预发布后缀的限制","仅在隔离构建中设置当前版本","当前版本1.0.0-rc.1；稳定目标1.0.1","1. 设置测试当前版本
+2. 手动检查
+3. 记录拒绝检查行为与产品策略是否一致","当前实现拒绝检查，不能声称支持该升级通道；记录与产品策略是否一致。GitHub prerelease 标记与本地版本后缀是两回事","P1","部分自动化","test/comprehensive.test.js :: 39 checkForStableUpdate rejects a prerelease current version"
+"SOURCE-01","发布源","优先使用Pages主源","主源与备用源请求均可观察","主源正常稳定T；备用源正常","1. 手动检查
+2. 核对目标T
+3. 检查是否额外调用备用API","使用主源；正常时不额外请求 GitHub API","P0","部分自动化","test/plugin.test.js :: checks the public TokensHarness release index by default"
+"SOURCE-02","发布源","主源异常降级备用API","独立主/备源；备用API始终返回有效T","主源断网、非法JSON、无有效稳定版三个独立场景","1. 逐个设置主源异常
+2. 执行检查
+3. 核对备用请求与最终结果","降级 API 得到正确目标；失败原因不被当作“没有更新”","P0","部分自动化","test/plugin.test.js :: falls back to the GitHub latest Release API when the index is unavailable"
+"SOURCE-03","发布源","全部来源失败后恢复","主备源均可故障注入；应用可正常启动","403、429、超时、超过2MiB响应，分别对两个源设置","1. 逐场景手动检查并观察后台提示频率
+2. 恢复正常数据源
+3. 重试并记录结果","手动检查提示失败；后台不持续弹窗；应用可用，恢复源后重试成功；不高频重试 API","P1","部分自动化","test/comprehensive.test.js :: 40 checkForStableUpdate returns null on a non-200 status
+test/comprehensive.test.js :: 41 checkForStableUpdate returns null when the request throws
+test/comprehensive.test.js :: 49 checkForStableUpdate rejects an over-declared content-length
+test/comprehensive.test.js :: 50 checkForStableUpdate rejects a body exceeding the byte cap while streaming
+test/comprehensive.test.js :: 97 manual check reports a failed lookup as null through the adapter
+test/comprehensive.test.js :: 120 a request timeout aborts the check and surfaces a failed lookup"
+"SOURCE-04","发布源","Release标记与Pages同步","独立测试仓库和Pages发布流程","T稳定、T预发布、T恢复稳定；各状态索引快照","1. 修改Release标记但暂不刷新索引并检查
+2. 发布新索引，核对实际JSON再检查
+3. 记录两阶段选择结果及发布时间","主源可用时以其数据为准；Release 改动不会自动穿透陈旧索引。先确认索引已发布新标志，再验插件过滤；记录发布工作流和 Pages 的时间","P0","人工验收",""
+"SOURCE-05","发布源","自定义版本源配置","隔离Profile；原配置已备份","有效HTTPS主备URL、自定义owner/repo、空值、HTTP、非法URL","1. 逐组修改配置并重启
+2. 触发检查并记录实际请求地址
+3. 恢复配置","有效配置生效；无效配置按代码约定回退；实际请求目标与产品配置一致","P1","部分自动化","test/plugin.test.js :: config overrides product name and release source URLs
+test/comprehensive.test.js :: 34 checkForStableUpdate honours a custom endpoint and user agent
+test/comprehensive.test.js :: 90 release endpoints use Pages first and the GitHub API as fallback"
+"ENTRY-01","操作入口","顶部检查入口","候选Host启动；可观察本机请求","有更高稳定版、已是最新、断网三组","1. 逐组切换测试源
+2. 点击顶部版本按钮
+3. 检查接口状态、实际处理插件与结果提示","/api/desktop/updates/check 由本插件处理，无 404；对应结果准确；不调用被停用的原生更新插件","P0","部分自动化","test/comprehensive.test.js :: 96 manual check reports up-to-date through the adapter
+test/comprehensive.test.js :: 97 manual check reports a failed lookup as null through the adapter
+test/comprehensive.test.js :: 98 manual check prompts for download when a newer release exists
+test/comprehensive.test.js :: 169 Desktop top button and tray share one manual update task
+test/comprehensive.test.js :: 170 Desktop update route rejects untrusted and non-empty requests"
+"ENTRY-02","操作入口","托盘与侧栏入口","已打包的Windows/macOS；稳定T可下载","Windows托盘或macOS菜单栏；有效T资产","1. 从托盘或菜单栏检查并选择稍后
+2. 点击侧栏下载
+3. 检查是否重复确认及是否进入下载","托盘与顶部共用流程；侧栏显式下载无需额外确认；macOS 不依赖右键托盘即可操作","P0","部分自动化","test/comprehensive.test.js :: 98 manual check prompts for download when a newer release exists
+test/comprehensive.test.js :: 125 declining the confirmation dialog downloads nothing
+test/comprehensive.test.js :: 168 client RPC exposes an available update and starts its download without another confirmation
+test/comprehensive.test.js :: 169 Desktop top button and tray share one manual update task"
+"ENTRY-03","操作入口","并发点击不重复执行","测试源响应可延迟；目标资产可限速","同一稳定目标T；多个连续操作","1. 连续点击顶部和托盘入口
+2. 下载中再次点击
+3. 取消确认后再次操作并检查请求/安装器数量","合并并发检查/下载，不启动多份文件流或多个安装器；确认取消后仍可再试","P1","部分自动化","test/comprehensive.test.js :: 100 concurrent manual invokes collapse into one network request
+test/comprehensive.test.js :: 121 a rejected confirmation leaves the plugin usable for the next check
+test/comprehensive.test.js :: 169 Desktop top button and tray share one manual update task"
+"PROMPT-01","更新提醒","同会话自动提醒去重","已打包；enabled=true；测试间隔可缩短","稳定T>C；默认initialDelayMs=60000、intervalMs=21600000","1. 启动等待首次检查并选择稍后
+2. 保持同一会话等待第二轮检查
+3. 记录提醒次数并恢复默认测试间隔","首次发现新版提示；同一会话同一版本不重复自动提示；默认后续间隔约 6 小时，不是“每天一次”","P1","部分自动化","test/comprehensive.test.js :: 116 a packaged build with polling enabled checks after the initial delay
+test/comprehensive.test.js :: 117 background polling prompts only once for the same version"
+"PROMPT-02","更新提醒","重启后再次自动提醒","已打包且启用后台检查；无下载任务","稳定T>C；保留已记录T的提示历史","1. 启动等待提醒并选择稍后
+2. 完全退出所有应用进程
+3. 重启等待首次后台检查并手动检查一次","即使提示历史保存过 T，也能再次自动提醒；不加每日限流；手动检查不被自动去重拦住","P0","部分自动化","test/comprehensive.test.js :: 118 background polling prompts again after app restart"
+"PROMPT-03","更新提醒","禁用后台及状态文件异常","测试Profile；已备份状态文件","enabled=false；损坏、只读、超大状态文件逐组测试","1. 逐组应用配置/状态并重启
+2. 观察后台行为并手动检查
+3. 核对可用性后恢复原状态","关闭的是后台检查，手动仍可用；状态文件失败不阻塞启动与更新","P1","部分自动化","test/comprehensive.test.js :: 103 a corrupt state file is repaired into a valid empty state
+test/comprehensive.test.js :: 107 an oversized state file is rejected rather than parsed
+test/comprehensive.test.js :: 109 an unwritable state path never breaks the update flow
+test/comprehensive.test.js :: 115 a packaged build with polling disabled never contacts GitHub"
+"LIFE-01","生命周期","退出与卸载清理","测试环境；可延迟请求和限速资产","检查进行中、下载进行中两个场景","1. 分别在请求中正常退出或卸载插件
+2. 重新打开或加载插件
+3. 检查托盘、轮询、下载状态及重试","请求可取消，无残留轮询、重复托盘注册、崩溃或幽灵进度；新会话可重试","P1","部分自动化","test/comprehensive.test.js :: 110 dispose releases the tray registration
+test/comprehensive.test.js :: 111 dispose aborts an in-flight version request
+test/comprehensive.test.js :: 112 dispose is idempotent
+test/comprehensive.test.js :: 113 a manual check started after dispose reports nothing to the user
+test/comprehensive.test.js :: 119 dispose stops the background poll loop"
+"DL-01","下载安装包","无缓存真实下载","完整候选Host；目标缓存已移至备份；隔离数据","真实T安装包及其URL、size、SHA-256","1. 点击侧栏下载
+2. 记录资产请求和新增临时文件
+3. 等待完成并核对最终文件；不得以直接网页下载替代","有实际资产请求和新增文件；记录 URL/时间/字节数。只看到安装器弹出、RPC true 或直接网页下载均不算通过","P0","部分自动化","test/comprehensive.test.js :: 122 confirming a download fetches and verifies the installer end to end
+test/comprehensive.test.js :: 168 client RPC exposes an available update and starts its download without another confirmation
+test/comprehensive.test.js :: installer bytes bypass the text-only Host bridge"
+"DL-02","下载安装包","实时下载进度","无有效缓存；可以限速传输","较大真实资产；传输覆盖至少两次UI刷新","1. 启动下载
+2. 记录开始、中间、完成阶段的字节和百分比
+3. 核对是否下载结束前已经显示进度","下载未结束时就能看到进度；已下载字节单调增加，百分比不超过 100；不是完整缓冲后突然完成","P0","部分自动化","test/comprehensive.test.js :: 128 the tray reports the downloading state while an installer transfers
+test/comprehensive.test.js :: 167 downloadInstaller reports monotonic byte progress through completion
+test/comprehensive.test.js :: 168 client RPC exposes an available update and starts its download without another confirmation"
+"DL-03","下载安装包","二进制完整性和摘要","独立测试源；伪安装包测试必须拦截安装器启动","真实资产；包含00、90、ff字节的多块数据；正确/错误SHA-256","1. 分别下载正常与错误摘要数据
+2. 比对下载文件与原始字节、大小、摘要
+3. 确认坏文件未交给安装器","与源文件逐字节一致；正确摘要匹配才交给安装器，损坏摘要绝不启动","P0","部分自动化","test/comprehensive.test.js :: 64 downloadInstaller writes a payload whose digest matches
+test/comprehensive.test.js :: 67 downloadInstaller reassembles a multi-chunk stream correctly
+test/comprehensive.test.js :: 71 downloadInstaller rejects a mismatched SHA-256 digest
+test/comprehensive.test.js :: 72 downloadInstaller leaves no file behind after a digest mismatch
+test/comprehensive.test.js :: 123 a tampered installer is never written to its final path
+test/comprehensive.test.js :: installer bytes bypass the text-only Host bridge"
+"DL-04","下载安装包","平台架构和缺资产","可指定平台/架构的自动化夹具或对应设备","Windows x64、macOS arm64/x64资产；缺资产；伪后缀","1. 逐组运行资产选择并触发侧栏下载
+2. 检查选中资产
+3. 缺资产时核对返回值与文件生成情况","Windows x64、macOS arm64/x64 各选对应后缀；不跨架构误选；缺资产侧栏结果 false，不伪装成功","P0","部分自动化","test/comprehensive.test.js :: 55 selectInstallerAsset picks the Windows x64 installer
+test/comprehensive.test.js :: 56 selectInstallerAsset picks the macOS arm64 installer
+test/comprehensive.test.js :: 57 selectInstallerAsset picks the macOS x64 installer
+test/comprehensive.test.js :: 58 selectInstallerAsset returns null for an unsupported platform
+test/comprehensive.test.js :: 59 selectInstallerAsset returns null for an unsupported architecture
+test/comprehensive.test.js :: 60 selectInstallerAsset returns null when no asset matches the pattern
+test/comprehensive.test.js :: 61 selectInstallerAsset returns null for an empty asset list
+test/comprehensive.test.js :: 62 selectInstallerAsset anchors the suffix and rejects lookalike names
+test/comprehensive.test.js :: 63 selectInstallerAsset does not cross-match macOS assets on Windows
+test/comprehensive.test.js :: 124 a release without a matching installer asset downloads nothing"
+"DL-05","下载安装包","资产与元数据重定向","受控HTTPS服务器与合法证书","资产302到CDN；元数据302；元数据备用源正常","1. 下载资产跳转响应
+2. 单独检查元数据跳转响应
+3. 记录最终请求与备用源行为，不关闭TLS校验","资产允许合法下载重定向；元数据拒绝跳转并尝试备用源；HTTPS 错误不通过关闭证书校验解决","P1","部分自动化","test/comprehensive.test.js :: 33 checkForStableUpdate refuses to follow redirects and skips the cache
+test/comprehensive.test.js :: 70 downloadInstaller requests the URL it is given, not the asset URL"
+"DL-06","下载安装包","下载镜像替换","隔离Profile；配置可恢复","有效HTTPS镜像前缀、空值、HTTP镜像","1. 逐组设置镜像并下载
+2. 核对实际请求URL和文件摘要
+3. 恢复镜像配置","有效镜像只替换 GitHub 前缀，摘要校验仍执行；无效镜像回到直连；记录最终地址","P1","部分自动化","test/comprehensive.test.js :: 126 the download mirror prefix rewrites the GitHub asset host
+test/comprehensive.test.js :: 127 a non-HTTPS mirror prefix is ignored and GitHub is used directly"
+"DL-07","下载安装包","下载响应边界","自动化夹具；不得分配或运行未知大文件","无size/摘要、畸形摘要、空体、声明偏小、流超过1GiB","1. 逐组运行受控下载夹具
+2. 检查拒绝结果与缓存复用
+3. 核对生产Release是否提供正确摘要","当前允许无摘要下载但不能缓存复用；畸形摘要、空体、超过限制失败。生产发布源必须提供正确摘要","P1","部分自动化","test/comprehensive.test.js :: 65 downloadInstaller accepts an asset without a declared digest
+test/comprehensive.test.js :: 66 downloadInstaller rejects a malformed digest string
+test/comprehensive.test.js :: 74 downloadInstaller rejects an empty response body
+test/comprehensive.test.js :: 75 downloadInstaller rejects a payload larger than the declared size
+test/comprehensive.test.js :: 76 downloadInstaller caps a zero-declared size at the global installer limit
+test/comprehensive.test.js :: 77 downloadInstaller ignores an absurd declared size and applies the global limit
+test/comprehensive.test.js :: 148 verifyDownloadedInstaller refuses to trust a release that declares no digest"
+"CACHE-01","缓存与目录","有效缓存复用","目标T>C；缓存大小与SHA-256已核对","与Release完全一致的T文件","1. 点击侧栏下载
+2. 观察资产网络请求
+3. 核对直接启动的安装器路径","重算摘要验证后复用；无资产下载请求，允许直接启动安装器；不能替代 DL-01","P0","部分自动化","test/comprehensive.test.js :: 140 verifyDownloadedInstaller accepts a file whose digest matches the release asset
+test/comprehensive.test.js :: 150 an installer already on disk is reused without any network download"
+"CACHE-02","缓存与目录","拒绝损坏缓存","已备份有效缓存；只改隔离副本","错摘要、错大小、空文件、Release缺摘要四组","1. 逐组准备同名缓存
+2. 点击下载
+3. 核对重新下载行为与最终文件，不启动损坏旧文件","不信任旧缓存，重新请求并校验；不启动旧的损坏文件","P0","部分自动化","test/comprehensive.test.js :: 143 verifyDownloadedInstaller rejects a file whose bytes were tampered with
+test/comprehensive.test.js :: 144 verifyDownloadedInstaller rejects a size that disagrees with the release asset
+test/comprehensive.test.js :: 147 verifyDownloadedInstaller rejects an empty file
+test/comprehensive.test.js :: 148 verifyDownloadedInstaller refuses to trust a release that declares no digest
+test/comprehensive.test.js :: 151 a tampered installer on disk is refetched instead of being trusted"
+"CACHE-03","缓存与目录","下载目录解析","隔离Profile；各路径位于测试目录","绝对路径、含空格/中文路径、~/子目录、相对路径；T与更高版本","1. 逐组配置路径并下载
+2. 记录实际落盘位置
+3. 切换版本再下载，确认目录分离并恢复配置","合法目录可写且按版本分开；相对/非法路径回退；不写进插件目录或覆盖其他版本","P1","部分自动化","test/comprehensive.test.js :: 152 productDataDirectory places Windows state under the roaming application data directory
+test/comprehensive.test.js :: 154 productDataDirectory follows the macOS and XDG conventions on other platforms
+test/comprehensive.test.js :: 159 resolveDownloadDirectory appends the version to a configured absolute directory
+test/comprehensive.test.js :: 160 resolveDownloadDirectory expands a leading tilde to the home directory
+test/comprehensive.test.js :: 161 resolveDownloadDirectory trims surrounding whitespace before deciding
+test/comprehensive.test.js :: 162 resolveDownloadDirectory falls back for relative and unusable configuration
+test/comprehensive.test.js :: 163 every resolved directory ends in the version so releases cannot overwrite each other
+test/comprehensive.test.js :: 164 a configured absolute downloadDirectory receives the installer
+test/comprehensive.test.js :: 165 a relative downloadDirectory writes to the default location, never the process cwd"
+"INSTALL-01","安装升级","Windows安装器执行","Windows x64测试机；下载已校验；工作已保存","本产品真实T Windows安装包","1. 从插件完成下载并观察安装器
+2. 正常处理系统提示并完成安装
+3. 启动应用核对版本","拉起正确安装器；操作系统提示由测试者正常处理；安装完成后版本变为 T，不误称进程启动等于安装成功","P0","人工验收",""
+"INSTALL-02","安装升级","macOS镜像与安装","对应架构macOS测试机；下载已校验；工作已保存","本产品真实T DMG；arm64和x64分别测试","1. 由插件打开DMG
+2. 正常完成Applications替换
+3. 启动应用；系统阻止时记录，不关闭保护绕过","打开正确镜像并可安装运行；系统阻止或架构不匹配记失败/限制，不关闭系统保护来获取通过","P0","人工验收",""
+"INSTALL-03","安装升级","升级后重启与数据保留","安装前已准备并备份测试Profile；已完成安装T","升级前后版本；同一个Profile的测试配置和历史","1. 彻底退出所有旧进程
+2. 启动新应用并检查版本/数据
+3. 再次检查更新并保留截图","版本正确、历史/配置保留；目标与当前相等时不重复提示更新；记录升级前后版本截图","P0","人工验收",""
+"ERR-01","错误处理","失败结果与提示准确","侧栏可下载；受控源；无有效缓存","网络异常、HTTP500、摘要不符、缺资产逐组注入","1. 逐组从侧栏触发下载
+2. 检查value.started、提示和按钮状态
+3. 恢复正常源验证可重新操作","下载 RPC 的 value.started 为 false；侧栏出现失败提示并恢复可操作，不静默吞错后返回 true","P0","部分自动化","test/comprehensive.test.js :: 71 downloadInstaller rejects a mismatched SHA-256 digest
+test/comprehensive.test.js :: 73 downloadInstaller rejects a non-200 response
+test/comprehensive.test.js :: 80 downloadInstaller propagates a request rejection
+test/comprehensive.test.js :: 124 a release without a matching installer asset downloads nothing
+test/comprehensive.test.js :: failed binary request does not report started true"
+"ERR-02","错误处理","安装器启动失败","隔离自动化夹具；避免执行未知软件","不存在/不可执行目标；模拟spawn error","1. 完成有效下载校验
+2. 注入安装器启动错误
+3. 检查返回值与反馈；macOS另核对open后的实际结果","false；不可仅因已写入文件就宣称完成。macOS open 进程启动后的退出失败须另行人工验证","P0","部分自动化","test/comprehensive.test.js :: 82 openInstaller rejects when the target cannot be executed"
+"ERR-03","错误处理","中断后重试","隔离下载目录；服务器支持受控断流","真实T资产；传输中断后恢复正常","1. 开始下载并在中途断流
+2. 检查失败和临时文件
+3. 恢复服务，重新点击并检查最终文件","失败或取消后能重试；不把半成品当最终安装包；受控断流需清理本次临时文件","P0","部分自动化","test/comprehensive.test.js :: 78 downloadInstaller aborts when the caller signal fires
+test/comprehensive.test.js :: 79 downloadInstaller propagates a stream error and cleans up"
+"ERR-04","错误处理","文件系统故障","独立测试卷或夹具；不得改系统目录权限或占满工作盘","只读目录、空间不足、目标文件占用逐组模拟","1. 逐组触发下载
+2. 检查应用、原有效文件、返回值
+3. 解除故障后重试","不崩溃、不误报成功、不启动损坏文件；解除条件后可重试；不删除原有效文件","P1","待自动化",""
+"NET-01","网络兼容","实际代理网络下载","使用团队支持的真实网络配置；不降低安全设置","直连、系统代理/VPN各一轮；每轮无缓存","1. 各网络执行元数据检查和真实下载
+2. 分别记录两类请求
+3. 比对文件摘要；无法执行的网络记阻塞或有理由的N/A","记录元数据与资产请求各自成功与否；Node fetch 与 Electron net.fetch 代理行为不可视为相同，必须真实下载验证","P0","人工验收",""
+"NET-02","网络兼容","慢速与无响应可退出","受控源；测试数据隔离","持续低速、长时间无响应两个场景","1. 开始下载并记录等待时间
+2. 正常退出应用
+3. 恢复服务并重启后再次下载","能正常退出，无崩溃；记录未完成时长。当前没有独立的总下载超时保证，不把“等了很久”自动判为通过","P1","待自动化",""
+"RPC-01","通信契约","回环命令与真实下载区分","完整候选Host；可观察开发者工具和Host请求","本机download RPC；真实HTTPS资产请求","1. 侧栏触发下载
+2. 核对回环请求用途及Host资产请求
+3. 分别记录HTTP状态、ok和value.started","回环地址只接收命令/状态，真正资产请求发生在 Host；HTTP 200、外层 ok:true 不等于下载成功，检查 value.started","P0","部分自动化","test/comprehensive.test.js :: 168 client RPC exposes an available update and starts its download without another confirmation
+test/comprehensive.test.js :: failed binary request does not report started true"
+"RPC-02","通信契约","下载返回时序与状态轮询","限速下载；可记录RPC时间线","同一download调用和周期status调用","1. 开始下载
+2. 传输中持续读status
+3. 下载及安装器启动步骤结束后检查download返回","当前 download 要等流程完成才返回，不是后台受理即返回；期间 status 能正常轮询。true 只代表校验及启动步骤已通过，不代表用户已完成安装","P1","部分自动化","test/comprehensive.test.js :: 128 the tray reports the downloading state while an installer transfers
+test/comprehensive.test.js :: 168 client RPC exposes an available update and starts its download without another confirmation"
+"SEC-01","接口安全","拒绝不可信更新请求","隔离测试宿主；仅使用测试客户端与测试凭据","错方法、Origin、Host、非回环地址、非法或超大body；正常同源对照","1. 逐组调用顶部检查路由
+2. 观察拒绝响应和有无副作用
+3. 正常同源请求验证可用","拒绝不可信请求，不触发更新副作用；正常同源请求可用。测试用合法测试客户端，不复用/导出用户凭据","P0","部分自动化","test/comprehensive.test.js :: 170 Desktop update route rejects untrusted and non-empty requests"
+"UI-01","界面布局","侧栏按钮定位","目标T可用；对应平台图形界面","Windows/macOS；侧栏展开/折叠","1. 分别切换侧栏状态
+2. 观察下载按钮与设置位置
+3. 核对版本文字、图标和提示并截图","下载按钮与设置入口同排并靠右，不在上方另占一行；可显示版本，不显示常驻“下载”文字；提示和无障碍名称可含“下载”","P0","部分自动化","test/plugin.test.js :: wide update action anchors after other footer actions without consuming their row"
+"UI-02","界面布局","缩放与主题布局","图形环境可调整；不改用户持久设置","最小支持窗口；100/125/150/200%缩放；深浅主题；长版本号","1. 逐组切换显示条件
+2. 检查按钮、版本文字和设置入口
+3. 保存截图并恢复原显示设置","图标尺寸紧凑、文字不溢出、设置按钮不被挤压；版本号较长也不重叠；保存前后截图","P1","人工验收",""
+"UI-03","界面布局","下载与失败状态下布局","目标可限速下载并模拟失败","下载进行中与失败状态；展开/折叠侧栏","1. 下载期间调整侧栏和窗口
+2. 尝试重复点击
+3. 注入失败并关闭提示、重试及操作其他界面","进度仍可见，按钮不会重复触发；失败提示可关闭并可重试，其他工作区功能可操作","P0","人工验收",""
+"UI-04","界面布局","语言和键盘可访问","可切换中文/英文；目标T可用","Tab、Enter、图标悬停；两种语言","1. 各语言使用Tab定位按钮
+2. 悬停查看提示并Enter触发
+3. 检查焦点、禁用态和文字布局","焦点可见、提示有意义、禁用态正确；语言切换不引发布局错位","P1","人工验收",""
