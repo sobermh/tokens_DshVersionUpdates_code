@@ -55,9 +55,10 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
-    "check": "node --check index.js && npm run typecheck && npm run build && node --test",
+    "check": "node --check index.js && npm run typecheck && npm run build && npm test",
     "prepack": "npm run build",
-    "test": "node --test"
+    "test": "node --test test/comprehensive.test.js test/plugin.test.js",
+    "test:cases": "node test/run-test-cases.mjs"
   },
   "dependencies": {
     "@deepseek-ai/dsh-atomic-write": "0.1.0-rc.6",

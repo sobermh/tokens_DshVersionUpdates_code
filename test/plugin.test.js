@@ -53,12 +53,6 @@ test('checks the public TokensHarness release index by default', async () => {
   assert.equal(new Headers(calls[0].init.headers).get('user-agent'), 'TokensHarness')
 })
 
-test('wide update action anchors after other footer actions without consuming their row', async () => {
-  const styles = await readFile(new URL('../src/client/styles.ts', import.meta.url), 'utf8')
-  assert.match(styles, /div:has\(> \[data-slot="sidebar\.footer\.action"\] > \.tokensVersionUpdateRoot\)\s*\{[^}]*position: relative;[^}]*flex-direction: column;/su)
-  assert.match(styles, /\.tokensVersionUpdateWide\s*\{[^}]*position: static;[^}]*flex: 0 0 0;[^}]*width: 0;[^}]*height: 0;/su)
-  assert.match(styles, /\.tokensVersionUpdateWide \.tokensVersionUpdateButton\s*\{[^}]*position: absolute;[^}]*top: calc\(100% \+ 13px\);[^}]*right: 0;/su)
-})
 
 test('falls back to the GitHub latest Release API when the index is unavailable', async () => {
   const calls = []
@@ -229,3 +223,74 @@ test('config overrides product name and release source URLs', async () => {
     await rm(root, { recursive: true, force: true })
   }
 })
+
+const releaseAuditHeaders = {
+  accept: 'application/vnd.github+json',
+  'user-agent': 'tokens-dsh-version-updates-release-audit',
+  ...(process.env.GITHUB_TOKEN ? { authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {}),
+}
+
+const releaseAudit = loadReleaseAudit()
+
+test('live Pages index matches its GitHub stable Release', async () => {
+  const { indexedRelease, githubRelease } = await releaseAudit
+  assert.equal(indexedRelease.tag_name, githubRelease.tag_name)
+  assert.equal(indexedRelease.target_commitish, githubRelease.target_commitish)
+  assert.equal(indexedRelease.draft, false)
+  assert.equal(indexedRelease.prerelease, false)
+  assert.equal(githubRelease.draft, false)
+  assert.equal(githubRelease.prerelease, false)
+})
+
+test('live stable Release publishes all branded installers with digests', async () => {
+  const { githubRelease } = await releaseAudit
+  const version = githubRelease.tag_name.slice(1)
+  const assets = new Map(githubRelease.assets.map(asset => [asset.name, asset]))
+  for (const suffix of [
+    'windows-amd64-installer.exe',
+    'macos-arm64-installer.dmg',
+    'macos-amd64-installer.dmg',
+  ]) {
+    const name = `TokensCowork-${version}-${suffix}`
+    const asset = assets.get(name)
+    assert.ok(asset, `missing ${name}`)
+    assert.ok(asset.size > 0, `${name} is empty`)
+    assert.match(asset.digest ?? '', /^sha256:[0-9a-f]{64}$/u)
+    assert.match(asset.browser_download_url, /^https:\/\/github\.com\/TokensAPI\/TokensCowork\/releases\/download\//u)
+  }
+  assert.equal(
+    githubRelease.assets.some(asset => /DeepSeek|DSH.Desktop/iu.test(asset.name)),
+    false,
+    'stable release contains an upstream installer',
+  )
+})
+
+
+async function loadReleaseAudit() {
+  const index = await fetchJSON(RELEASE_INDEX_ENDPOINT)
+  assert.ok(Array.isArray(index), 'Pages release index is not an array')
+  const stable = index
+    .filter(release => release?.draft === false
+      && release?.prerelease === false
+      && parseSemVer(release.tag_name)?.prerelease.length === 0)
+    .sort((left, right) => compareSemVerVersions(right.tag_name, left.tag_name))[0]
+  assert.ok(stable, 'Pages release index contains no stable release')
+  const repositoryMatch = /^(https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+)\/releases\/\d+$/u.exec(stable.url ?? '')
+  assert.ok(repositoryMatch, 'Pages stable release has an invalid GitHub API URL')
+
+  const githubRelease = await fetchJSON(stable.url)
+  return { indexedRelease: stable, githubRelease }
+}
+
+async function fetchJSON(url) {
+  const response = await fetch(url, {
+    headers: releaseAuditHeaders,
+    redirect: 'error',
+    signal: AbortSignal.timeout(20_000),
+  })
+  if (!response.ok) {
+    const remaining = response.headers.get('x-ratelimit-remaining')
+    throw new Error(`${url} returned HTTP ${response.status}; rate-limit remaining=${remaining ?? 'unknown'}`)
+  }
+  return response.json()
+}

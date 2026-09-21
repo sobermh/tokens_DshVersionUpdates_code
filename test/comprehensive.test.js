@@ -7,9 +7,144 @@ import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
-import { join, sep } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { Readable } from 'node:stream'
 import test from 'node:test'
+
+/* Exercise the checked-out upstream bridge, not a copied compatibility mock. */
+async function attachCurrentUpstream(host) {
+  const { build } = await import('esbuild')
+  const pluginRoot = dirname(dirname(fileURLToPath(import.meta.url)))
+  const outerRoot = resolve(process.env.TOKENS_HARNESS_ROOT ?? (
+    existsSync(join(pluginRoot, '..', '..', 'product.json'))
+      ? join(pluginRoot, '..', '..')
+      : join(pluginRoot, '..', 'tokens_TokensHarness_code')
+  ))
+  const source = join(outerRoot, 'desktop', 'dsh-plugin-desktop', 'src')
+  assert.ok(existsSync(join(source, 'host-runtime-bridge.ts')), 'Current upstream source missing; set TOKENS_HARNESS_ROOT')
+  const built = await build({
+    stdin: {
+      contents: "export { createHostRuntime, bindNativeRuntime, runtimeSnapshot } from './host-runtime-bridge.ts'; export { HostRpc } from './host-rpc.ts'",
+      resolveDir: source, loader: 'ts',
+    },
+    bundle: true, platform: 'node', format: 'esm', write: false,
+  })
+  const { createHostRuntime, bindNativeRuntime, runtimeSnapshot, HostRpc } =
+    await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))
+  const listeners = [undefined, undefined]
+  const port = index => ({
+    send(message) {
+      const copy = structuredClone(message)
+      queueMicrotask(() => listeners[1 - index]?.(copy))
+    },
+    listen(callback) { listeners[index] = callback; return () => { listeners[index] = undefined } },
+  })
+  const nativeRpc = new HostRpc(port(0), 2000)
+  const hostRpc = new HostRpc(port(1), 2000)
+  let tray
+  const original = host.ctx.desktopRuntime
+  const native = {
+    ...original, platform: process.platform, locale: 'en',
+    registerTrayItem(item) {
+      tray = item
+      return original.registerTrayItem(item)
+    },
+  }
+  const unbind = bindNativeRuntime(nativeRpc, native)
+  const remote = createHostRuntime(hostRpc, runtimeSnapshot(native))
+  host.ctx.desktopRuntime = remote
+  return {
+    remote,
+    tray: () => tray,
+    async close() {
+      await unbind()
+      hostRpc.close()
+      nativeRpc.close()
+    },
+  }
+}
+
+async function upstreamDownloadRegression(t, failDownload) {
+  const root = await tempDir('actual-upstream')
+  const payload = Buffer.from([0x4d, 0x5a, 0xff, 0xfe, 0, 0x80, 0xc3, 0x28])
+  const asset = downloadableRelease('0.2.0', payload)
+  const url = 'https://github.com/o/r/releases/download/v0.2.0/' + asset.name
+  let binaryRequests = 0
+  const host = harness({
+    root, connection: true,
+    request: async (target, init) => {
+      assert.ok(isReleaseMetadataRequest(target), 'Installer must not cross the text-only upstream bridge')
+      assert.equal(init.redirect, 'error')
+      assert.equal(init.cache, 'no-store')
+      assert.ok(init.signal instanceof AbortSignal)
+      return release({ assets: [{ ...asset, browser_download_url: url }] })
+    },
+    downloadRequest: async target => {
+      assert.equal(target, url)
+      binaryRequests++
+      return failDownload ? new Response('unavailable', { status: 503 }) : new Response(payload)
+    },
+  })
+  const bridge = await attachCurrentUpstream(host)
+  mockInstallerLaunch(t)
+  const instance = host.start()
+  try {
+    await bridge.remote.mountScheduled()
+    assert.ok(bridge.tray(), 'Upstream tray registration must complete')
+    await bridge.tray().invoke()
+    assert.deepEqual(await instance.rpc('status'), {
+      ok: true, value: { phase: 'available', productName: 'TokensHarness', version: '0.2.0' },
+    })
+    assert.deepEqual(host.log.confirmed, ['0.2.0'])
+    assert.deepEqual(await instance.rpc('download'), { ok: true, value: { started: !failDownload } })
+    assert.equal(binaryRequests, 1)
+    const path = join(root, '0.2.0', asset.name)
+    if (failDownload) assert.equal(existsSync(path), false)
+    else assert.deepEqual(await readFile(path), payload)
+  } finally {
+    await instance.dispose()
+    await bridge.close()
+    await rm(root, { recursive: true, force: true })
+  }
+}
+
+test('176 current upstream bridge preserves plugin binary downloads', async t => {
+  await upstreamDownloadRegression(t, false)
+})
+
+test('177 current upstream bridge reports download failure accurately', async t => {
+  await upstreamDownloadRegression(t, true)
+})
+
+test('178 current upstream bridge propagates cancellation', async () => {
+  const root = await tempDir('upstream-cancel')
+  let signal
+  let started
+  const ready = new Promise(resolve => { started = resolve })
+  const host = harness({
+    root,
+    request: async (_url, init) => {
+      signal = init.signal
+      started()
+      return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true }))
+    },
+  })
+  const bridge = await attachCurrentUpstream(host)
+  const controller = new AbortController()
+  try {
+    const pending = bridge.remote.updates.request('https://example.test/releases', { signal: controller.signal })
+    await ready
+    controller.abort()
+    await assert.rejects(pending, /cancel/i)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(signal.aborted, true)
+  } finally {
+    await bridge.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 
 import {
   Config,
@@ -771,13 +906,20 @@ test('70 downloadInstaller requests the URL it is given, not the asset URL', asy
   const root = await tempDir('mirror')
   try {
     let requested
+    let requestedInit
     await downloadInstaller({
       asset: { name: 'm.exe', url: 'https://github.com/original', size: 1, digest: null },
       url: 'https://mirror.test/proxy',
-      request: async (url) => { requested = url; return new Response(Buffer.from('z')) },
+      request: async (url, init) => {
+        requested = url
+        requestedInit = init
+        return new Response(Buffer.from('z'))
+      },
       directory: root,
     })
     assert.equal(requested, 'https://mirror.test/proxy')
+    assert.equal(requestedInit.redirect, 'follow')
+    assert.equal(requestedInit.cache, 'no-store')
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -1265,11 +1407,13 @@ test('107 an oversized state file is rejected rather than parsed', async () => {
   const root = await tempDir('huge')
   try {
     await writeFile(join(root, 'state.json'), ' '.repeat(8 * 1024) + '{"version":2}')
-    const host = harness({ root, request: async () => release({ tag_name: 'v0.1.0' }) })
+    const host = harness({ root, request: async () => release({ tag_name: 'v0.2.0' }) })
     const { tray, dispose } = host.start()
-    const settled = await waitForState(join(root, 'state.json'), text => text.length < 1_024)
-    assert.deepEqual(JSON.parse(settled), { version: 2 })
+    // An available update awaits stateReady before prompting, so this assertion
+    // observes the completed repair instead of racing the background read.
     await tray.invoke()
+    const settled = await readFile(join(root, 'state.json'), 'utf8')
+    assert.deepEqual(JSON.parse(settled), { version: 2, lastPromptedVersion: '0.2.0' })
     await dispose()
   } finally {
     await rm(root, { recursive: true, force: true })
@@ -1758,6 +1902,214 @@ test('128 the tray reports the downloading state while an installer transfers', 
     await pending
     await dispose()
   } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('171 download rechecks a withdrawn or prerelease target before fetching bytes', {
+  skip: SUPPORTED_HOST ? false : 'unsupported host platform',
+}, async (t) => {
+  mockInstallerLaunch(t)
+
+  for (const changedRelease of [
+    { tag_name: 'v0.1.0' },
+    { tag_name: 'v0.2.0', prerelease: true },
+  ]) {
+    const root = await tempDir('recheck-reject')
+    const payload = Buffer.from('installer-bytes')
+    const asset = downloadableRelease('0.2.0', payload)
+    let currentRelease = release({
+      tag_name: 'v0.2.0',
+      assets: [{
+        name: asset.name,
+        browser_download_url: `https://github.com/o/r/${asset.name}`,
+        size: asset.size,
+        digest: asset.digest,
+      }],
+    })
+    let downloads = 0
+    const host = harness({
+      root,
+      connection: true,
+      confirm: false,
+      request: async () => currentRelease.clone(),
+      downloadRequest: async () => {
+        downloads += 1
+        return new Response(payload)
+      },
+    })
+    const { tray, rpc, dispose } = host.start()
+    try {
+      await tray.invoke()
+      currentRelease = release(changedRelease)
+      assert.deepEqual(await rpc('download'), { ok: true, value: { started: false } })
+      assert.equal(downloads, 0, 'a changed target must be rejected before its bytes are fetched')
+    } finally {
+      await dispose()
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+})
+
+test('172 download refreshes to a newer stable target before allowing a retry', {
+  skip: SUPPORTED_HOST ? false : 'unsupported host platform',
+}, async (t) => {
+  mockInstallerLaunch(t)
+  const root = await tempDir('recheck-newer')
+  const oldPayload = Buffer.from('old-installer')
+  const newPayload = Buffer.from('new-installer')
+  const oldAsset = downloadableRelease('0.2.0', oldPayload)
+  const newAsset = downloadableRelease('0.3.0', newPayload)
+  let currentVersion = '0.2.0'
+  let downloads = 0
+  const host = harness({
+    root,
+    connection: true,
+    confirm: false,
+    request: async () => {
+      const asset = currentVersion === '0.2.0' ? oldAsset : newAsset
+      return release({
+        tag_name: `v${currentVersion}`,
+        assets: [{
+          name: asset.name,
+          browser_download_url: `https://github.com/o/r/${asset.name}`,
+          size: asset.size,
+          digest: asset.digest,
+        }],
+      })
+    },
+    downloadRequest: async () => {
+      downloads += 1
+      return new Response(newPayload)
+    },
+  })
+  const { tray, rpc, dispose } = host.start()
+  try {
+    await tray.invoke()
+    currentVersion = '0.3.0'
+    assert.deepEqual(await rpc('download'), { ok: true, value: { started: false } })
+    assert.deepEqual(await rpc('status'), {
+      ok: true,
+      value: { phase: 'available', productName: 'TokensHarness', version: '0.3.0' },
+    })
+    assert.deepEqual(await rpc('download'), { ok: true, value: { started: true } })
+    assert.equal(downloads, 1)
+    assert.deepEqual(await readFile(join(root, '0.3.0', newAsset.name)), newPayload)
+  } finally {
+    await dispose()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('173 filesystem destination failures preserve existing files and allow retry', async () => {
+  const root = await tempDir('filesystem-retry')
+  const directory = join(root, 'downloads')
+  const payload = Buffer.from('replacement-installer')
+  const asset = downloadableRelease('0.2.0', payload, 'win32', 'x64')
+  const finalPath = join(directory, asset.name)
+  const partialPath = join(directory, `.${asset.name}.${process.pid}.partial`)
+  try {
+    await mkdir(directory, { recursive: true })
+    await writeFile(finalPath, Buffer.from('existing-installer'))
+    await mkdir(partialPath)
+
+    await assert.rejects(downloadInstaller({
+      asset,
+      url: 'https://github.com/o/r/installer.exe',
+      request: async () => new Response(payload),
+      directory,
+    }))
+    assert.deepEqual(await readFile(finalPath), Buffer.from('existing-installer'))
+
+    await rm(partialPath, { recursive: true, force: true })
+    assert.equal(await downloadInstaller({
+      asset,
+      url: 'https://github.com/o/r/installer.exe',
+      request: async () => new Response(payload),
+      directory,
+    }), finalPath)
+    assert.deepEqual(await readFile(finalPath), payload)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('174 disposing a stalled download aborts it and a new session can retry', {
+  skip: SUPPORTED_HOST ? false : 'unsupported host platform',
+}, async (t) => {
+  mockInstallerLaunch(t)
+  const root = await tempDir('stalled-retry')
+  const payload = Buffer.from('retry-installer')
+  const asset = downloadableRelease('0.2.0', payload)
+  let stalledRequestStarted
+  const started = new Promise(resolve => { stalledRequestStarted = resolve })
+  const releaseResponse = () => release({
+    tag_name: 'v0.2.0',
+    assets: [{
+      name: asset.name,
+      browser_download_url: `https://github.com/o/r/${asset.name}`,
+      size: asset.size,
+      digest: asset.digest,
+    }],
+  })
+  const stalled = harness({
+    root,
+    connection: true,
+    confirm: false,
+    request: async () => releaseResponse(),
+    downloadRequest: async (_url, init) => new Promise((resolve, reject) => {
+      stalledRequestStarted()
+      init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true })
+    }),
+  })
+  const first = stalled.start()
+  try {
+    await first.tray.invoke()
+    const pending = first.rpc('download')
+    await started
+    await first.dispose()
+    assert.deepEqual(await pending, { ok: true, value: { started: false } })
+
+    const retry = harness({
+      root,
+      connection: true,
+      confirm: false,
+      request: async () => releaseResponse(),
+      downloadRequest: async () => new Response(payload),
+    }).start()
+    try {
+      await retry.tray.invoke()
+      assert.deepEqual(await retry.rpc('download'), { ok: true, value: { started: true } })
+      assert.deepEqual(await readFile(join(root, '0.2.0', asset.name)), payload)
+    } finally {
+      await retry.dispose()
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('175 a failed version lookup can recover on the next manual check', async () => {
+  const root = await tempDir('lookup-recovery')
+  let available = false
+  const host = harness({
+    root,
+    request: async () => {
+      if (!available) throw new Error('temporary network failure')
+      return release({ tag_name: 'v0.2.0' })
+    },
+  })
+  const { tray, dispose } = host.start()
+  try {
+    await tray.invoke()
+    assert.deepEqual(host.log.manual, [null])
+
+    available = true
+    await tray.invoke()
+    assert.deepEqual(host.log.confirmed, ['0.2.0'])
+    assert.equal(tray.label(), 'TokensHarness 0.2.0 Available')
+  } finally {
+    await dispose()
     await rm(root, { recursive: true, force: true })
   }
 })
