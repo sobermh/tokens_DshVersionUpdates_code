@@ -30,6 +30,7 @@
     "index.js",
     "download.js",
     "identity.js",
+    "messages.js",
     "index.d.ts",
     "dist/client.js",
     "cordis.patch.yml",

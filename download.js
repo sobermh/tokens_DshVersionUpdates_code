@@ -13,6 +13,13 @@ import { join } from 'node:path'
 /** Maximum accepted installer size, in bytes. */
 export const MAX_INSTALLER_BYTES = 1024 * 1024 * 1024
 
+/** Asset names must remain portable single filenames, including on Windows. */
+export function isSafeAssetName(name) {
+  return typeof name === 'string' && name.length > 0 && name.length <= 255
+    && !/[\u0000-\u001f\u007f/\\:*?"<>|]|[. ]$/u.test(name)
+    && !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(name)
+}
+
 const ASSET_PATTERNS = {
   'win32:x64': /-windows-amd64-installer\.exe$/u,
   'darwin:arm64': /-macos-arm64-installer\.dmg$/u,
@@ -34,7 +41,7 @@ const ASSET_PATTERNS = {
 export function selectInstallerAsset(assets, platform = process.platform, arch = process.arch) {
   const pattern = ASSET_PATTERNS[`${platform}:${arch}`]
   if (pattern === undefined) return null
-  return assets.find(asset => pattern.test(asset.name)) ?? null
+  return assets.find(asset => isSafeAssetName(asset.name) && pattern.test(asset.name)) ?? null
 }
 
 /* ====================================================================
@@ -110,6 +117,8 @@ export async function verifyDownloadedInstaller(path, asset) {
  */
 export async function downloadInstaller(options) {
   const { asset, url, request, directory, signal, onProgress } = options
+  if (!isSafeAssetName(asset.name)) throw new Error('installer asset name is invalid')
+  signal?.throwIfAborted()
   const declaredDigest = parseSha256Digest(asset.digest)
   const sizeLimit = typeof asset.size === 'number' && asset.size > 0 && asset.size <= MAX_INSTALLER_BYTES
     ? asset.size
@@ -137,19 +146,30 @@ export async function downloadInstaller(options) {
       : 0
 
   const hash = createHash('sha256')
-  const handle = await open(temporary, 'wx', 0o600)
   const reader = response.body.getReader()
+  const cancelReader = () => { void reader.cancel(signal.reason).catch(() => undefined) }
+  signal?.addEventListener('abort', cancelReader, { once: true })
+  let handle
   let bytesWritten = 0
   reportProgress(onProgress, bytesWritten, progressTotal)
   try {
+    signal?.throwIfAborted()
+    handle = await open(temporary, 'wx', 0o600)
     while (true) {
       signal?.throwIfAborted()
       const chunk = await reader.read()
+      signal?.throwIfAborted()
       if (chunk.done) break
       bytesWritten += chunk.value.byteLength
       if (bytesWritten > sizeLimit) throw new Error('installer download exceeds the declared size')
+      let offset = 0
+      while (offset < chunk.value.byteLength) {
+        signal?.throwIfAborted()
+        const written = await handle.write(chunk.value, offset, chunk.value.byteLength - offset)
+        if (written.bytesWritten === 0) throw new Error('installer file write made no progress')
+        offset += written.bytesWritten
+      }
       hash.update(chunk.value)
-      await handle.write(chunk.value)
       reportProgress(onProgress, bytesWritten, progressTotal)
     }
     if (bytesWritten === 0) throw new Error('installer download returned an empty body')
@@ -158,16 +178,20 @@ export async function downloadInstaller(options) {
     if (declaredDigest !== null && actualDigest !== declaredDigest) {
       throw new Error('installer digest mismatch')
     }
+    if (sizeLimit === asset.size && bytesWritten !== asset.size) {
+      throw new Error('installer size mismatch')
+    }
+    signal?.throwIfAborted()
     await handle.close()
-    await unlink(finalPath).catch(() => undefined)
     await rename(temporary, finalPath)
     return finalPath
   } catch (cause) {
     await reader.cancel().catch(() => undefined)
-    await handle.close().catch(() => undefined)
-    await unlink(temporary).catch(() => undefined)
+    await handle?.close().catch(() => undefined)
+    if (handle !== undefined) await unlink(temporary).catch(() => undefined)
     throw cause
   } finally {
+    signal?.removeEventListener('abort', cancelReader)
     reader.releaseLock()
   }
 }
@@ -175,8 +199,7 @@ export async function downloadInstaller(options) {
 /* ====================================================================
  * 安装器移交（导出）
  * 以分离子进程打开下载完成的安装器：Windows 直接运行 NSIS 安装器，
- * macOS 交给系统打开 DMG。应用内下载的文件不带隔离属性，未签名
- * 场景也可直接打开。
+ * macOS 交给系统打开 DMG。签名检查与系统安全提示由操作系统负责。
  * ==================================================================== */
 
 /**

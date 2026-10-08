@@ -5,9 +5,11 @@ import { homedir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import Schema from '@deepseek-ai/schemastery'
+import { updateMessages } from './messages.js'
 import {
   MAX_INSTALLER_BYTES,
   downloadInstaller,
+  isSafeAssetName,
   openInstaller,
   selectInstallerAsset,
   verifyDownloadedInstaller,
@@ -192,33 +194,34 @@ export async function checkForStableUpdate(options) {
 /**
  * Describe the dialog shown after one manual update check.
  * @param {import('./index.d.ts').UpdateCheckResult | null} result Check outcome, or null on failure.
- * @param {{ productName: string, releasesPageURL: string }} options Branding and manual download target.
+ * @param {{ productName: string, releasesPageURL: string, locale?: string }} options Branding, locale and manual download target.
  * @returns {{ type: string, title: string, message: string, detail: string }} Dialog specification.
  */
 export function describeManualCheck(result, options) {
   const { productName, releasesPageURL } = options
+  const text = updateMessages(options.locale)
   if (result === null) {
     return {
       type: 'warning',
-      title: 'Unable to Check for Updates',
-      message: `${productName} could not check for updates.`,
-      detail: 'Please try again later.',
+      title: text.unavailableTitle,
+      message: text.unavailable(productName),
+      detail: text.retry,
     }
   }
   if (result.status === 'update-available') {
     return {
       type: 'info',
-      title: `${productName} Update Available`,
-      message: `${productName} ${result.latestVersion} is available.`,
-      detail: 'This build cannot install updates automatically. Download it manually:'
+      title: text.availableTitle(productName),
+      message: text.available(productName, result.latestVersion),
+      detail: text.manual
         + `\n\n${releasesPageURL}`,
     }
   }
   return {
     type: 'info',
-    title: `${productName} Is Up to Date`,
-    message: `No newer version of ${productName} is available.`,
-    detail: `Installed version: ${result.currentVersion}`,
+    title: text.currentTitle(productName),
+    message: text.current(productName),
+    detail: text.installed(result.currentVersion),
   }
 }
 
@@ -460,12 +463,13 @@ export function apply(ctx, config) {
     const confirmDownload = async (version) => {
       const electron = await loadElectron()
       if (electron === null) return adapter.confirmDownload(version)
+      const text = updateMessages(ctx.desktopRuntime.locale)
       const result = await electron.dialog.showMessageBox({
         type: 'info',
-        title: `${productName} Update Available`,
-        message: `${productName} ${version} is available.`,
-        detail: 'Download this update now?',
-        buttons: ['Download', 'Later'],
+        title: text.availableTitle(productName),
+        message: text.available(productName, version),
+        detail: text.confirm,
+        buttons: [text.download, text.later],
         defaultId: 1,
         cancelId: 1,
         noLink: true,
@@ -476,14 +480,15 @@ export function apply(ctx, config) {
     const announceReady = async (version, path) => {
       const electron = await loadElectron()
       if (electron === null) return
+      const text = updateMessages(ctx.desktopRuntime.locale)
       await electron.dialog.showMessageBox({
         type: 'info',
-        title: `${productName} Update Downloaded`,
-        message: `${productName} ${version} is ready to install.`,
+        title: text.readyTitle(productName),
+        message: text.ready(productName, version),
         detail: process.platform === 'darwin'
-          ? `The disk image has opened. Replace ${productName} in Applications, then reopen it.`
-          : `The installer has started. Follow it to update ${productName}.\n\n${path}`,
-        buttons: ['OK'],
+          ? text.macReady(productName)
+          : `${text.winReady(productName)}\n\n${path}`,
+        buttons: [text.ok],
         defaultId: 0,
         noLink: true,
       })
@@ -493,8 +498,8 @@ export function apply(ctx, config) {
       const electron = await loadElectron()
       if (electron === null) return adapter.showManualCheckResult(result)
       await electron.dialog.showMessageBox({
-        ...describeManualCheck(result, { productName, releasesPageURL }),
-        buttons: ['OK'],
+        ...describeManualCheck(result, { productName, releasesPageURL, locale: ctx.desktopRuntime.locale }),
+        buttons: [updateMessages(ctx.desktopRuntime.locale).ok],
         defaultId: 0,
         noLink: true,
       })
@@ -632,9 +637,9 @@ export function apply(ctx, config) {
       order: 10,
       label: () => downloadingVersion === undefined
         ? availableVersion === undefined
-          ? checking ? 'Checking for Updates…' : 'Check Updates…'
-          : `${productName} ${availableVersion} Available`
-        : `Downloading ${productName} ${downloadingVersion}…`,
+          ? checking ? updateMessages(ctx.desktopRuntime.locale).checking : updateMessages(ctx.desktopRuntime.locale).check
+          : updateMessages(ctx.desktopRuntime.locale).trayAvailable(productName, availableVersion)
+        : updateMessages(ctx.desktopRuntime.locale).trayDownloading(productName, downloadingVersion),
       invoke: runManualCheck,
     })
     refreshTray = registration.refresh
@@ -766,6 +771,7 @@ function parseReleaseAssets(value) {
   for (const item of value) {
     if (!isRecord(item)
       || typeof item.name !== 'string'
+      || !isSafeAssetName(item.name)
       || typeof item.browser_download_url !== 'string'
       || !item.browser_download_url.startsWith('https://')) continue
     assets.push({

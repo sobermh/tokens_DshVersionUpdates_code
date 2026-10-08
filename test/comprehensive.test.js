@@ -16,11 +16,16 @@ import test from 'node:test'
 async function attachCurrentUpstream(host) {
   const { build } = await import('esbuild')
   const pluginRoot = dirname(dirname(fileURLToPath(import.meta.url)))
-  const outerRoot = resolve(process.env.TOKENS_HARNESS_ROOT ?? (
-    existsSync(join(pluginRoot, '..', '..', 'product.json'))
-      ? join(pluginRoot, '..', '..')
-      : join(pluginRoot, '..', 'tokens_TokensHarness_code')
-  ))
+  const candidates = [
+    join(pluginRoot, '.test-host'),
+    join(pluginRoot, '..', '..'),
+    join(pluginRoot, '..', 'TokensCowork'),
+    join(pluginRoot, '..', 'tokens_TokensHarness_code'),
+  ]
+  const outerRoot = process.env.TOKENS_HARNESS_ROOT
+    ? resolve(process.env.TOKENS_HARNESS_ROOT)
+    : candidates.find(root => existsSync(join(root, 'desktop', 'dsh-plugin-desktop', 'src', 'host-runtime-bridge.ts')))
+  assert.ok(outerRoot, 'Current upstream source missing; set TOKENS_HARNESS_ROOT or checkout test/upstream.json into .test-host/desktop')
   const source = join(outerRoot, 'desktop', 'dsh-plugin-desktop', 'src')
   assert.ok(existsSync(join(source, 'host-runtime-bridge.ts')), 'Current upstream source missing; set TOKENS_HARNESS_ROOT')
   const built = await build({
@@ -1904,6 +1909,117 @@ test('128 the tray reports the downloading state while an installer transfers', 
   } finally {
     await rm(root, { recursive: true, force: true })
   }
+})
+
+test('179 download rejects unsafe asset names before network or filesystem effects', async () => {
+  const root = await tempDir('unsafe-name')
+  let requests = 0
+  try {
+    for (const name of ['../escape.exe', '..\\escape.exe', '/absolute.exe', 'C:drive.exe', 'CON.exe', 'bad.exe.', 'bad\u0000.exe']) {
+      await assert.rejects(downloadInstaller({
+        asset: { name, size: 1, digest: null }, url: 'https://example.test/a',
+        request: async () => { requests++; return new Response('x') },
+        directory: join(root, 'new'),
+      }), /asset name/u)
+    }
+    assert.equal(selectInstallerAsset([{ name: '../bad-windows-amd64-installer.exe' }], 'win32', 'x64'), null)
+    assert.equal(requests, 0)
+    assert.deepEqual(await readdir(root), [])
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('180 download rejects truncated bytes and preserves the existing installer', async () => {
+  const root = await tempDir('truncated')
+  try {
+    await writeFile(join(root, 'existing.exe'), 'original')
+    await assert.rejects(downloadInstaller({
+      asset: { name: 'existing.exe', size: 10, digest: null }, url: 'https://example.test/a',
+      request: async () => new Response('short'), directory: root,
+    }), /size mismatch/u)
+    assert.equal(await readFile(join(root, 'existing.exe'), 'utf8'), 'original')
+    assert.deepEqual(await readdir(root), ['existing.exe'])
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('181 download writes every byte when the filesystem performs short writes', async t => {
+  const { open } = await import('node:fs/promises')
+  const root = await tempDir('short-write')
+  const probe = await open(join(root, 'probe'), 'w')
+  const prototype = Object.getPrototypeOf(probe)
+  const original = prototype.write
+  await probe.close()
+  const mocked = t.mock.method(prototype, 'write', function (buffer, offset = 0, length = buffer.byteLength - offset) {
+    return original.call(this, buffer, offset, Math.min(3, length))
+  })
+  try {
+    const payload = Buffer.from('complete-binary-payload')
+    const path = await downloadInstaller({
+      asset: { name: 'complete.exe', size: payload.length, digest: `sha256:${createHash('sha256').update(payload).digest('hex')}` },
+      url: 'https://example.test/a', request: async () => new Response(payload), directory: root,
+    })
+    assert.deepEqual(await readFile(path), payload)
+    assert.ok(mocked.mock.calls.length > 1)
+  } finally { mocked.mock.restore(); await rm(root, { recursive: true, force: true }) }
+})
+
+test('182 cancellation cleans up a stalled stream even if fetch ignores the signal', { timeout: 2000 }, async () => {
+  const root = await tempDir('stalled-stream')
+  const controller = new AbortController()
+  let cancelled = false
+  try {
+    const pending = downloadInstaller({
+      asset: { name: 'stalled.exe', size: 10, digest: null }, url: 'https://example.test/a',
+      request: async () => new Response(new ReadableStream({ cancel() { cancelled = true } })),
+      directory: root, signal: controller.signal,
+      onProgress: () => { setTimeout(() => controller.abort(new Error('cancel-stalled')), 20) },
+    })
+    await assert.rejects(pending, /cancel-stalled/u)
+    assert.equal(cancelled, true)
+    assert.deepEqual(await readdir(root), [])
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('183 manual dialogs localize failure, available and current outcomes with English fallback', () => {
+  const options = { productName: 'MyBrand', releasesPageURL: 'https://example.test/releases', locale: 'zh-CN' }
+  assert.deepEqual(describeManualCheck(null, options), {
+    type: 'warning', title: '无法检查更新', message: 'MyBrand 无法检查更新。', detail: '请稍后重试。',
+  })
+  const available = { status: 'update-available', latestVersion: '2.0.0', currentVersion: '1.0.0' }
+  assert.deepEqual(describeManualCheck(available, options), {
+    type: 'info', title: 'MyBrand 有可用更新', message: 'MyBrand 2.0.0 已发布。',
+    detail: '此构建无法自动安装更新，请手动下载：\n\nhttps://example.test/releases',
+  })
+  const current = { ...available, status: 'up-to-date' }
+  assert.deepEqual(describeManualCheck(current, { ...options, locale: 'zh-TW' }), {
+    type: 'info', title: 'MyBrand 已是最新版本', message: 'MyBrand 暂无更新版本。', detail: '已安装版本：1.0.0',
+  })
+  for (const result of [null, available, current]) {
+    const english = describeManualCheck(result, { ...options, locale: 'en-US' })
+    assert.deepEqual(describeManualCheck(result, { ...options, locale: 'fr-FR' }), english)
+    assert.deepEqual(describeManualCheck(result, { ...options, locale: undefined }), english)
+    assert.doesNotMatch(JSON.stringify(english), /[\u3400-\u9fff]/u)
+  }
+})
+
+test('184 tray reads the current host locale for idle, checking and available states', async () => {
+  const root = await tempDir('tray-locale')
+  let releaseRequest
+  try {
+    const gate = new Promise(resolve => { releaseRequest = resolve })
+    const host = harness({ root, request: async () => { await gate; return release() } })
+    host.ctx.desktopRuntime.locale = 'zh-CN'
+    const instance = host.start()
+    try {
+      assert.equal(instance.tray.label(), '检查更新…')
+      const pending = instance.tray.invoke()
+      assert.equal(instance.tray.label(), '正在检查更新…')
+      releaseRequest()
+      await pending
+      assert.equal(instance.tray.label(), 'TokensHarness 0.2.0 有可用更新')
+      host.ctx.desktopRuntime.locale = 'en-US'
+      assert.equal(instance.tray.label(), 'TokensHarness 0.2.0 Available')
+    } finally { releaseRequest(); await instance.dispose() }
+  } finally { await rm(root, { recursive: true, force: true }) }
 })
 
 test('171 download rechecks a withdrawn or prerelease target before fetching bytes', {

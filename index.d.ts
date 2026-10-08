@@ -82,6 +82,7 @@ export interface UpdateTrayItemRegistration {
 
 /** Desktop runtime fields consumed by this independent plugin. */
 export interface UpdateDesktopRuntime {
+  readonly locale?: string
   readonly updates: UpdateAdapter
   registerTrayItem(item: UpdateTrayItem): UpdateTrayItemRegistration
 }
@@ -158,7 +159,7 @@ export interface ManualCheckDialog {
 }
 export function describeManualCheck(
   result: UpdateCheckResult | null,
-  options: { productName: string, releasesPageURL: string },
+  options: { productName: string, releasesPageURL: string, locale?: string },
 ): ManualCheckDialog
 
 /** Resolve the application data directory holding one product's own state, or null when the name cannot be a directory. */
