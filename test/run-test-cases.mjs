@@ -3210,10 +3210,14 @@ test('package metadata and actual tarball include the complete runtime without l
     }
     assert.equal(files.some(file => /^(?:test|src|node_modules|\.github)\/|\.partial$|\.env/u.test(file)), false)
     const artifact = join(directory, packed.filename)
+    const contents = new Map()
+    await tar.t({ file: artifact, onReadEntry(entry) {
+      const chunks = []
+      entry.on('data', chunk => chunks.push(chunk))
+      entry.on('end', () => contents.set(entry.path, Buffer.concat(chunks).toString('utf8')))
+    } })
     for (const required of ['index.js', 'download.js', 'messages.js', 'dist/client.js']) {
-      const extracted = spawnSync('tar', ['-xOf', artifact, `package/${required}`], { encoding: 'utf8' })
-      assert.equal(extracted.status, 0, extracted.stderr)
-      assert.equal(extracted.stdout, await readFile(new URL(required, root), 'utf8'))
+      assert.equal(contents.get(`package/${required}`), await readFile(new URL(required, root), 'utf8'))
     }
   } finally { await rm(directory, { recursive: true, force: true }) }
 })
