@@ -3402,6 +3402,8 @@ test('workflow parses and gates automatic and manual publication on checks', asy
   assert.match(workflow.jobs.publish.if, /inputs.publish/);
   assert.match(workflow.jobs.publish.if, /refs\/tags\/v/);
   assert.deepEqual(workflow.jobs.check.strategy.matrix.node, ['22.19.0', '24', '26']);
+  assert.equal(workflow.jobs.check['runs-on'], 'windows-latest', 'Installer cases must run on a supported host');
+  assert.equal(workflow.jobs.check.defaults.run.shell, 'bash', 'Output variables and tarball globs need Bash');
   assert.ok(workflow.jobs.resolve.steps.some(s => s.run?.includes('refs/tags/$tag^{commit}')));
   const publishSteps = workflow.jobs.publish.steps;
   const credentialSteps = publishSteps.filter(s => s.env?.NODE_AUTH_TOKEN);

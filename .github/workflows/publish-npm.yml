@@ -51,7 +51,11 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
   check:
     needs: resolve
-    runs-on: ubuntu-latest
+    # Download handoff cases target Windows/macOS; Linux intentionally cannot install.
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:

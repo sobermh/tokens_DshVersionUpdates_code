@@ -23,7 +23,8 @@ Registry 的 ACL 负责访问控制；依赖安装从公共 npm 获取，不会�
 项目使用 npm 和 package-lock.json，运行 `npm ci --ignore-scripts`。
 `.npmrc` 中的 `legacy-peer-deps=true` 固定原有 RC.6 客户端依赖的兼容安装方式：
 上游 peer 范围会解析到要求 RC.7 的包，严格 peer 解析会冲突；不以升级宿主依赖来修复发布配置。
-CI 使用 Node 22.19.0、24、26，覆盖声明的最低版本及当前偶数版本线。
+CI 使用 Windows 和 Node 22.19.0、24、26，覆盖声明的最低版本及当前偶数版本线。
+安装包用例在 Windows 执行，发布任务仍在 Ubuntu 构建及验证同一提交。
 `>=24` 是开放范围，不代表未来所有 Node 版本已经验证。
 
 CI 通过 `node test/run-test-cases.mjs --upstream` 读取固定仓库和完整提交，检出真实 Host 源码到 `.test-host/desktop`，

@@ -34,5 +34,10 @@ export function validateRelease(manifest, tag) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   validateRelease(manifest, process.argv[2] || `v${manifest.version}`);
+  const changelog = readFileSync(new URL('../docs/CHANGELOG.md', import.meta.url), 'utf8');
+  if (!changelog.includes(`## [${manifest.version}] - `)
+    || !changelog.includes(`[${manifest.version}]: https://github.com/${RELEASE_REPOSITORY}/compare/`)) {
+    throw new Error('Release changelog must match package version');
+  }
   console.log(`Validated ${manifest.name}@${manifest.version} for Verdaccio`);
 }
