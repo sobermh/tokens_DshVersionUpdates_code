@@ -64,7 +64,7 @@ node scripts/verify-tarball.mjs .release/<npm-pack-输出的文件名>.tgz
 ```
 
 目录 `.release` 需先创建；发布测试使用隔离文件和模拟 Registry，不执行真实发布。
-本次仅配置流程，版本保持 0.1.0；未经用户确认不提交、推送、创建标签或发布。
+插件版本以 package.json 为准；提交、推送代码和创建发布标签须分别获得用户授权。
 仓库当前 isFork=false。将来如果迁移到 fork，需检查真实 Actions 页面是否出现启用确认，
 不能仅依赖 API active 状态；启用需获得授权。
 本地检查通过不等于远程 Actions 或 Registry 发布已验证。
