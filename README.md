@@ -96,10 +96,27 @@ npm install
 npm run check
 ```
 
-## 发布回归测试
+## 功能回归测试
 
-统一维护 [test/test_cases.csv](test/test_cases.csv)，包含48项用例，列为八要素加“自动化状态”和“对应测试”。使用UTF-8 BOM与标准CSV转义，支持表格软件和文本编辑器；步骤包含换行，脚本需使用CSV解析器读取。
+`test/` 只保留两个文件：
 
-每次更新在插件仓库运行 `npm run check`，执行全部现有自动化。“对应测试”列记录真实测试文件与测试名称；部分自动化只代表部分断言已有脚本，不能代替该用例完整验收。缺少脚本的如实记录待自动化或人工验收，不把未执行算作通过。
+- [test_cases.csv](test/test_cases.csv)：用例定义和断言映射。
+- [run-test-cases.mjs](test/run-test-cases.mjs)：全部自动化断言、隔离夹具和统一执行入口。
 
-实际结果按用例编号单独汇报通过、失败、阻塞、未执行或不适用及原因，不覆盖CSV定义。Windows与macOS分别验证；无缓存下载、完整Host链路、实际安装与重启不能用缓存复用或隔离函数测试代替。使用隔离数据和测试源，安装、发送等有副作用操作须确认，不能关闭系统安全保护或直接修改正式app.asar。本文只提供测试约定，不会自动调度测试。
+`npm test` 与 `npm run test:cases` 使用同一入口。在独立仓库执行：
+
+`test` 目录仅保留这张 CSV 和 `run-test-cases.mjs`：前者是唯一的用例定义表，后者保存自动化实现与执行入口。
+每个保留的测试都必须关联 CSV 用例；执行器会将缺少映射、跳过及失败的测试判为未通过。
+
+```sh
+npm ci --ignore-scripts --registry=https://registry.npmjs.org/
+npm run check
+npm run test:cases
+```
+
+兼容用例直接编译真实上游 Host 桥接源码。CI 根据执行脚本中的 `TEST_UPSTREAM`
+固定的提交检出到 `.test-host/desktop`；本地可使用同一目录，或以
+`TOKENS_HARNESS_ROOT` 指定包含 `desktop/dsh-plugin-desktop/src` 的宿主项目根目录。
+本地缺少专用目录时也会查找相邻的 TokensCowork 项目。
+
+成功报告“全部通过”；失败列出用例和原因。代码测试不代表已经完成真实安装或界面验收。
