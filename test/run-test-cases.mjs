@@ -34,11 +34,11 @@ import { run } from 'node:test'
 import { readFileSync } from 'node:fs'
 import { relative } from 'node:path'
 import { spawnSync } from 'node:child_process'
-
-
-
-
-
+import { parseDocument } from 'yaml'
+import * as tar from 'tar'
+import { validateRelease, RELEASE_REPOSITORY } from '../scripts/validate-release.mjs'
+import { registryRelease } from '../scripts/registry-release.mjs'
+import { verifyTarball } from '../scripts/verify-tarball.mjs'
 
 export const TEST_UPSTREAM = {
   "repository": "anywhere-labs/deepseek-harness-desktop",
@@ -46,9 +46,9 @@ export const TEST_UPSTREAM = {
 }
 
 // Each suite runs in its own Node test process so OS/network mocks remain isolated.
-const worker = process.argv[2]?.match(/^--case-worker=(comprehensive|plugin)$/)?.[1]
+const worker = process.argv[2]?.match(/^--case-worker=(comprehensive|plugin|publishing)$/)?.[1]
 if (worker) {
-  const register = { comprehensive: registerComprehensiveTests, plugin: registerPluginTests }
+  const register = { comprehensive: registerComprehensiveTests, plugin: registerPluginTests, publishing: registerPublishingTests }
   await register[worker]()
 } else if (process.argv.length === 3 && process.argv[2] === '--upstream') {
   if (!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/.test(TEST_UPSTREAM.repository) || !/^[a-f0-9]{40}$/.test(TEST_UPSTREAM.commit)) throw new Error('Invalid upstream source pin')
@@ -88,7 +88,7 @@ const results = new Map()
 let failedTests = 0
 let passedTests = 0
 let skippedTests = 0
-for (const suite of ['comprehensive', 'plugin']) {
+for (const suite of ['comprehensive', 'plugin', 'publishing']) {
 for await (const event of run({ files: [fileURLToPath(import.meta.url)], argv: ['--case-worker=' + suite], isolation: 'process' })) {
   if (!['test:pass', 'test:fail'].includes(event.type)) continue
   const data = event.data
@@ -3184,7 +3184,39 @@ const releaseAuditHeaders = {
   ...(process.env.GITHUB_TOKEN ? { authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {}),
 }
 
-
+test('package metadata and actual tarball include the complete runtime without local artifacts', async () => {
+  const root = new URL('../', import.meta.url)
+  const manifest = JSON.parse(await readFile(new URL('package.json', root), 'utf8'))
+  assert.equal(manifest.name, '@tokens/dsh-version-updates')
+  assert.equal(manifest.repository.url, 'git+https://github.com/sobermh/tokens_DshVersionUpdates_code.git')
+  assert.equal(manifest.publishConfig.registry, 'https://npm.tokensapi.ai/')
+  for (const field of ['displayName', 'summary']) {
+    assert.ok(manifest.tokenscowork[field]['zh-CN'].trim())
+    assert.ok(manifest.tokenscowork[field]['en-US'].trim())
+    assert.notEqual(manifest.tokenscowork[field]['zh-CN'], manifest.tokenscowork[field]['en-US'])
+  }
+  const directory = await mkdtemp(join(tmpdir(), 'version-updates-pack-'))
+  try {
+    const command = process.platform === 'win32' ? process.env.ComSpec ?? 'cmd.exe' : 'npm'
+    const args = ['pack', '--json', '--ignore-scripts', '--pack-destination', directory]
+    const execution = spawnSync(command, process.platform === 'win32' ? ['/d', '/s', '/c', 'npm', ...args] : args, {
+      cwd: root, encoding: 'utf8', timeout: 60_000,
+    })
+    assert.equal(execution.status, 0, execution.stderr)
+    const [packed] = JSON.parse(execution.stdout)
+    const files = packed.files.map(file => file.path)
+    for (const required of ['index.js', 'download.js', 'identity.js', 'messages.js', 'index.d.ts', 'dist/client.js', 'cordis.patch.yml', 'package.json', 'LICENSE']) {
+      assert.ok(files.includes(required), `missing packaged runtime file: ${required}`)
+    }
+    assert.equal(files.some(file => /^(?:test|src|node_modules|\.github)\/|\.partial$|\.env/u.test(file)), false)
+    const artifact = join(directory, packed.filename)
+    for (const required of ['index.js', 'download.js', 'messages.js', 'dist/client.js']) {
+      const extracted = spawnSync('tar', ['-xOf', artifact, `package/${required}`], { encoding: 'utf8' })
+      assert.equal(extracted.status, 0, extracted.stderr)
+      assert.equal(extracted.stdout, await readFile(new URL(required, root), 'utf8'))
+    }
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})
 
 const releaseAudit = loadReleaseAudit()
 
@@ -3254,3 +3286,137 @@ async function fetchJSON(url) {
 }
 
 // Publishing assertions; CSV maps observable cases to these test names.
+async function registerPublishingTests() {
+
+
+
+
+
+
+
+
+
+
+
+
+const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+const tag = `v${manifest.version}`;
+
+test('publishing rejects wrong identity, registry, version and metadata', () => {
+  assert.equal(validateRelease(manifest, tag), manifest.version);
+  for (const edit of [
+    m => { m.name = '@other/package'; }, m => { m.private = true; },
+    m => { m.repository.url = `git+https://github.com.evil.test/${RELEASE_REPOSITORY}.git`; },
+    m => { m.repository.url = `git+https://github.com/${RELEASE_REPOSITORY}-other.git`; },
+    m => { m.publishConfig.registry = 'https://registry.npmjs.org/'; },
+    m => { m.publishConfig.access = 'public'; }, m => { m.version += '-rc.1'; },
+    m => { m.tokenscowork.summary['en-US'] = m.tokenscowork.summary['zh-CN']; },
+  ]) {
+    const candidate = structuredClone(manifest); edit(candidate);
+    assert.throws(() => validateRelease(candidate, tag));
+  }
+  assert.throws(() => validateRelease(manifest, `v${manifest.version}0`), /tag/);
+});
+
+test('registry refuses existing versions, query failures and wrong credentials', async () => {
+  const invoke = (status, username = 'tokenscowork') => registryRelease('check', {
+    manifest, token: 'test-only', fetchImpl: async url => url.endsWith('/-/whoami')
+      ? Response.json({ username }) : new Response(null, { status }),
+  });
+  await invoke(404);
+  await assert.rejects(invoke(200), /already published/);
+  for (const status of [202, 401, 403, 429, 500]) await assert.rejects(invoke(status), /absence is not confirmed/);
+  await assert.rejects(invoke(404, 'someone-else'), /tokenscowork/);
+  await assert.rejects(registryRelease('check', { manifest }), /VERDACCIO_PUBLISH_TOKEN/);
+  await assert.rejects(registryRelease('check', { manifest, token: 'test-only', fetchImpl: async () => { throw new Error('network failure'); } }), /network failure/);
+});
+
+test('registry verifies exact package, integrity and latest after publishing', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'release-integrity-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const filename = join(root, 'package.tgz');
+  const data = Buffer.from('test tarball bytes'); await writeFile(filename, data);
+  const metadata = { name: manifest.name, version: manifest.version,
+    dist: { integrity: `sha512-${createHash('sha512').update(data).digest('base64')}` } };
+  const invoke = value => registryRelease('verify', { manifest, token: 'test-only', filename,
+    fetchImpl: async url => Response.json(url.endsWith('/-/whoami') ? { username: 'tokenscowork' } : value) });
+  await invoke(metadata);
+  await assert.rejects(invoke({ ...metadata, name: 'other' }), /identity/);
+  await assert.rejects(invoke({ ...metadata, dist: { integrity: 'wrong' } }), /integrity/);
+  await assert.rejects(registryRelease('verify', { manifest, token: 'test-only', filename,
+    fetchImpl: async url => url.endsWith('/-/whoami') ? Response.json({ username: 'tokenscowork' }) : new Response(null, { status: 503 }),
+  }), /verification failed/);
+  let queries = 0;
+  await registryRelease('verify', { manifest, token: 'test-only', filename,
+    fetchImpl: async url => {
+      if (url.endsWith('/-/whoami')) return Response.json({ username: 'tokenscowork' });
+      return ++queries === 1 ? new Response(null, { status: 202 }) : Response.json(metadata);
+    },
+  });
+  assert.equal(queries, 3, 'Processing response must be queried again before declaring success');
+  let pendingQueries = 0;
+  await assert.rejects(registryRelease('verify', { manifest, token: 'test-only', filename,
+    fetchImpl: async url => {
+      if (url.endsWith('/-/whoami')) return Response.json({ username: 'tokenscowork' });
+      pendingQueries++;
+      return new Response(null, { status: 202 });
+    },
+  }), /not yet verified; do not publish again/);
+  assert.equal(pendingQueries, 3, 'Pending verification must have a bounded retry count');
+});
+
+test('tarball rejects missing runtime files and unexpected private files', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'release-tar-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, 'package'));
+  const files = ['package.json', 'index.js', 'identity.js', 'download.js', 'messages.js',
+    'index.d.ts', 'dist/client.js', 'cordis.patch.yml', 'README.md', 'LICENSE'];
+  for (const file of files) {
+    await mkdir(join(root, 'package', file, '..'), { recursive: true });
+    await writeFile(join(root, 'package', file), await readFile(new URL(`../${file}`, import.meta.url)));
+  }
+  const filename = join(root, 'test.tgz');
+  await tar.c({ cwd: root, file: filename, gzip: true }, ['package']);
+  await verifyTarball(filename, manifest);
+  await writeFile(join(root, 'package', '.npmrc'), 'secret-placeholder');
+  await tar.c({ cwd: root, file: filename, gzip: true }, ['package']);
+  await assert.rejects(verifyTarball(filename, manifest), /exactly/);
+  await rm(join(root, 'package', '.npmrc'));
+  await rm(join(root, 'package', 'messages.js'));
+  await tar.c({ cwd: root, file: filename, gzip: true }, ['package']);
+  await assert.rejects(verifyTarball(filename, manifest), /exactly/);
+});
+
+test('workflow parses and gates automatic and manual publication on checks', async () => {
+  const source = await readFile(new URL('../.github/workflows/publish-npm.yml', import.meta.url), 'utf8');
+  const document = parseDocument(source, { uniqueKeys: true });
+  assert.deepEqual(document.errors, []);
+  const workflow = document.toJS();
+  assert.deepEqual(workflow.on.push.branches, ['main']);
+  assert.deepEqual(workflow.on.push.tags, ['v*']);
+  assert.equal(workflow.on.workflow_dispatch.inputs.publish.default, false);
+  assert.equal(workflow.concurrency['cancel-in-progress'], false);
+  assert.match(workflow.concurrency.group, /inputs.release_tag.*github.ref_name/);
+  assert.deepEqual(workflow.jobs.publish.needs, ['resolve', 'check']);
+  assert.match(workflow.jobs.publish.if, /sobermh\/tokens_DshVersionUpdates_code/);
+  assert.match(workflow.jobs.publish.if, /inputs.publish/);
+  assert.match(workflow.jobs.publish.if, /refs\/tags\/v/);
+  assert.deepEqual(workflow.jobs.check.strategy.matrix.node, ['22.19.0', '24', '26']);
+  assert.ok(workflow.jobs.resolve.steps.some(s => s.run?.includes('refs/tags/$tag^{commit}')));
+  const publishSteps = workflow.jobs.publish.steps;
+  const credentialSteps = publishSteps.filter(s => s.env?.NODE_AUTH_TOKEN);
+  assert.equal(credentialSteps.length, 1);
+  assert.match(credentialSteps[0].run, /registry-release.mjs check[\s\S]*npm publish[\s\S]*registry-release.mjs verify/);
+  assert.match(credentialSteps[0].run, /--ignore-scripts --registry=https:\/\/npm.tokensapi.ai\//);
+  assert.equal(publishSteps.find(s => s.uses?.startsWith('actions/setup-node')).with['registry-url'], 'https://npm.tokensapi.ai/');
+  for (const job of Object.values(workflow.jobs)) {
+    for (const step of job.steps) {
+      if (step.uses?.startsWith('actions/checkout')) assert.equal(step.with['persist-credentials'], false);
+      if (step.run?.includes('npm pack')) assert.match(step.run, /npm pack --ignore-scripts/);
+    }
+  }
+  assert.ok(workflow.jobs.check.steps.some(s => s.run === 'npm run check'));
+  assert.ok(workflow.jobs.check.steps.some(s => s.with?.path === '.test-host/desktop'));
+});
+
+}

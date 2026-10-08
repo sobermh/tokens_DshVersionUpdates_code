@@ -120,3 +120,8 @@ npm run test:cases
 本地缺少专用目录时也会查找相邻的 TokensCowork 项目。
 
 成功报告“全部通过”；失败列出用例和原因。代码测试不代表已经完成真实安装或界面验收。
+
+## 私有 npm 发布
+
+发布配置、凭据要求和手动重试见 [发布说明](docs/publishing.md)。
+发布目标仅为 `https://npm.tokensapi.ai/`，插件包版本与产品 Release 版本独立。

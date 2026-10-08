@@ -1,7 +1,19 @@
 {
   "name": "@tokens/dsh-version-updates",
   "version": "0.1.0",
-  "private": true,
+  "publishConfig": {
+    "registry": "https://npm.tokensapi.ai/"
+  },
+  "tokenscowork": {
+    "displayName": {
+      "zh-CN": "TokensCowork 更新",
+      "en-US": "TokensCowork Updates"
+    },
+    "summary": {
+      "zh-CN": "检查稳定版产品更新，下载并校验 Windows 和 macOS 安装包。",
+      "en-US": "Check stable product updates and download verified Windows and macOS installers."
+    }
+  },
   "description": "TokensHarness GitHub Release update plugin",
   "license": "MIT",
   "type": "module",
@@ -34,7 +46,8 @@
     "index.d.ts",
     "dist/client.js",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
@@ -79,7 +92,9 @@
     "@types/react": "~18.3.1",
     "esbuild": "^0.24.0",
     "react": "^18.3.1",
-    "typescript": "^5.7.0"
+    "tar": "^7.5.22",
+    "typescript": "^5.7.0",
+    "yaml": "^2.9.1"
   },
   "allowScripts": {
     "esbuild@0.24.2": true
