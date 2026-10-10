@@ -3411,11 +3411,31 @@ test('workflow parses and gates automatic and manual publication on checks', asy
   assert.ok(workflow.jobs.resolve.steps.some(s => s.run?.includes('refs/tags/$tag^{commit}')));
   const publishSteps = workflow.jobs.publish.steps;
   const credentialSteps = publishSteps.filter(s => s.env?.NODE_AUTH_TOKEN);
-  assert.equal(credentialSteps.length, 1);
-  assert.match(credentialSteps[0].run, /registry-release.mjs check[\s\S]*npm publish[\s\S]*registry-release.mjs verify/);
-  assert.match(credentialSteps[0].run, /--ignore-scripts --registry=https:\/\/npm.tokensapi.ai\//);
+  assert.equal(credentialSteps.length, 2);
+  const publisher = credentialSteps.find(s => s.env.NODE_AUTH_TOKEN === '${{ secrets.VERDACCIO_PUBLISH_TOKEN }}');
+  const inspection = credentialSteps.find(s => s.env.NODE_AUTH_TOKEN === '${{ secrets.PLUGIN_CHECK_REGISTRY_TOKEN }}');
+  assert.ok(publisher && inspection);
+  assert.ok(publishSteps.indexOf(inspection) < publishSteps.indexOf(publisher));
+  assert.match(inspection.run, /NODE_AUTH_TOKEN:-/);
+  assert.match(inspection.run, /npm whoami.*== market/);
+  assert.doesNotMatch(inspection.run, /npm publish/);
+  assert.match(publisher.run, /registry-release.mjs check[\s\S]*npm publish[\s\S]*registry-release.mjs verify/);
+  assert.match(publisher.run, /--ignore-scripts --registry=https:\/\/npm.tokensapi.ai\//);
+  assert.ok(publishSteps.findIndex(s => s.id === 'package') > publishSteps.indexOf(publisher));
+  assert.equal(workflow.jobs.publish.outputs.package, '${{ steps.package.outputs.package }}');
+  const packageCheck = workflow.jobs['package-check'];
+  assert.equal(packageCheck.needs, 'publish');
+  const checker = packageCheck.uses.match(/^TokensAPI\/tokens_DshPluginCheck_code\/\.github\/workflows\/check-plugin-package\.yml@([a-f0-9]{40})$/);
+  assert.ok(checker);
+  assert.deepEqual(packageCheck.with, { package: '${{ needs.publish.outputs.package }}', checker_ref: checker[1] });
+  assert.deepEqual(packageCheck.secrets, { PLUGIN_CHECK_REGISTRY_TOKEN: '${{ secrets.PLUGIN_CHECK_REGISTRY_TOKEN }}' });
   assert.equal(publishSteps.find(s => s.uses?.startsWith('actions/setup-node')).with['registry-url'], 'https://npm.tokensapi.ai/');
   for (const job of Object.values(workflow.jobs)) {
+    if (job.uses) {
+      assert.equal(job, packageCheck);
+      assert.equal(job.steps, undefined);
+      continue;
+    }
     for (const step of job.steps) {
       if (step.uses?.startsWith('actions/checkout')) assert.equal(step.with['persist-credentials'], false);
       if (step.run?.includes('npm pack')) assert.match(step.run, /npm pack --ignore-scripts/);
