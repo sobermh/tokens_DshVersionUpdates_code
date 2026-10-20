@@ -107,6 +107,14 @@ npm run check
 `@deepseek-ai/dsh-atomic-write` 与 `@deepseek-ai/schemastery`；不要引入已在 DSH 0.2.1
 停发的 `@deepseek-ai/dsh-invariants`。
 
+客户端侧的 `@deepseek-ai/*` 在构建时全部置为 external，名字由宿主在渲染时解析：**宿主改了导出名，
+插件既不会在加载时报错，也不会被 peer 门禁拦住，只在界面真要用到那个组件时抛 React 错误。**
+所以客户端的开发依赖必须跟住产品实际锁定的宿主版本（当前 0.2.1-rc.2），由用例 PACK-04 逐名核对
+导出是否仍在；`TOKENS_HARNESS_ROOT` 指向真实宿主时它会再对宿主的同名包跑一遍。DSH 0.2 已停发
+`@deepseek-ai/dsh-client-runtime`：客户端 `Context` 类型改从 `@deepseek-ai/cordis` 取，`slots`
+坐席由 `@deepseek-ai/dsh-client-ui-renderer` 挂到 `Context` 上，`dsh.client.inject` 里的陌生包名
+会被宿主模块图静默忽略，不要留着。
+
 ## 功能回归测试
 
 `test/` 只保留两个文件：
@@ -144,6 +152,8 @@ npm run test:cases
 - 去掉已在 DSH 0.2.1 停发的 `@deepseek-ai/dsh-invariants` 依赖，运行时依赖升到
   `@deepseek-ai/dsh-atomic-write` 0.2.1-rc.2（该版本已不再要求它）。
 - 声明 `@deepseek-ai/dsh` 的双端 peer 区间并标记 `optional`，让 DSH 0.2 宿主能判断兼容。
+- 修正侧栏下载按钮的图标导出名：DSH 0.2.0 起 `IconDownloadOutline16` 已改名，改用
+  `IconDownloadOutlineRegular`，并把客户端开发依赖对齐到宿主的 0.2.1-rc.2。
 
 ### 0.1.1
 

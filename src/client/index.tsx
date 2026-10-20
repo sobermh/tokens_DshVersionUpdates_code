@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-api-remotes/client'
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
-import { IconDownloadOutline16, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconDownloadOutlineRegular, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+// Side-effect type imports: ui-renderer augments the Cordis Context with `slots`,
+// ui-sidebar declares the `sidebar.footer.action` slot this plugin registers into.
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import { installStyles } from './styles.ts'
 
@@ -117,7 +120,7 @@ function UpdateAction({ wide, readStatus, download }: UpdateActionProps) {
             className={`tokensVersionUpdateIcon${progress === undefined && downloading ? ' tokensVersionUpdateIndeterminate' : ''}`}
             style={ringStyle}
           >
-            <IconDownloadOutline16 size={wide ? 14 : 18} />
+            <IconDownloadOutlineRegular size={wide ? 14 : 18} />
           </span>
         </button>
       </Tooltip>

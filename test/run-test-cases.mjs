@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import childProcess from 'node:child_process'
-import { syncBuiltinESMExports } from 'node:module'
+import { createRequire, syncBuiltinESMExports } from 'node:module'
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
@@ -2425,6 +2425,85 @@ test('185 the manifest drops the discontinued invariants dependency and declares
     assert.match(upper, /^<\d+\.\d+\.\d+-0$/, `${name} peer upper bound must exclude the next major's prereleases`)
     // optional 不会逃过宿主门禁，但能让 npm 不去解析安装，锁文件里就不会多出第二份运行时副本。
     assert.equal(manifest.peerDependenciesMeta?.[name]?.optional, true, `${name} peer must stay optional`)
+  }
+})
+
+/**
+ * Collect the names a compiled runtime package really exports, following relative
+ * `export * from` hops so a bundled or a re-exporting entry both read correctly.
+ */
+async function compiledExportNames(entryPath) {
+  const names = new Set()
+  const pending = [entryPath]
+  const seen = new Set()
+  while (pending.length) {
+    const path = pending.shift()
+    if (seen.has(path)) continue
+    seen.add(path)
+    const source = await readFile(path, 'utf8')
+    for (const match of source.matchAll(/export\s*\{([^}]*)\}/gu)) {
+      for (const part of match[1].split(',')) {
+        const name = part.trim().split(/\s+as\s+/u).pop()
+        if (name && name !== 'default') names.add(name)
+      }
+    }
+    for (const match of source.matchAll(/export\s*\*\s*from\s*["'](\.[^"']+)["']/gu)) {
+      pending.push(resolve(dirname(path), match[1]))
+    }
+  }
+  return names
+}
+
+/** Value imports the client entry takes from host runtime packages; `import type` lines are erased by the build. */
+function clientHostImports(source) {
+  const wanted = new Map()
+  for (const match of source.matchAll(/^import\s+(?!type\b)\{([^}]*)\}\s+from\s+'(@deepseek-ai\/[^']+)'/gmu)) {
+    wanted.set(match[2], match[1].split(',').map(part => part.trim().split(/\s+as\s+/u)[0]).filter(Boolean))
+  }
+  return wanted
+}
+
+test('186 the client bundle only imports values the host runtime packages still export', async () => {
+  const pluginRoot = dirname(dirname(fileURLToPath(import.meta.url)))
+  const manifest = JSON.parse(await readFile(join(pluginRoot, 'package.json'), 'utf8'))
+  const entry = await readFile(join(pluginRoot, 'src', 'client', 'index.tsx'), 'utf8')
+  const bundle = await readFile(join(pluginRoot, 'dist', 'client.js'), 'utf8')
+  const wanted = clientHostImports(entry)
+  assert.ok(wanted.size, 'the client entry must take at least one value import from a host runtime package')
+
+  // DSH 0.2 unpublished @deepseek-ai/dsh-client-runtime; the client Context now comes from Cordis and
+  // the `slots` seat from ui-renderer. A stale dsh.client.inject name is silently ignored by the host
+  // module graph, so only this assertion keeps a dead package from reappearing.
+  for (const field of ['dependencies', 'devDependencies', 'peerDependencies']) {
+    assert.ok(!Object.hasOwn(manifest[field] ?? {}, '@deepseek-ai/dsh-client-runtime'),
+      `${field} must not name @deepseek-ai/dsh-client-runtime, which DSH 0.2 no longer publishes`)
+  }
+  assert.ok(!manifest.dsh.client.inject.includes('@deepseek-ai/dsh-client-runtime'),
+    'dsh.client.inject must not name @deepseek-ai/dsh-client-runtime')
+
+  // The published client bundle keeps @deepseek-ai/* external, so every imported name is resolved by
+  // the host at render time: a renamed export fails inside React, not at load, and only when an update
+  // is actually available. Check the names against the packages the host really ships.
+  const roots = [{ label: 'installed runtime packages', require: createRequire(join(pluginRoot, 'package.json')) }]
+  const outerRoot = process.env.TOKENS_HARNESS_ROOT ? resolve(process.env.TOKENS_HARNESS_ROOT) : undefined
+  const hostManifest = outerRoot && join(outerRoot, 'desktop', 'dsh-plugin-desktop', 'package.json')
+  if (hostManifest && existsSync(join(dirname(hostManifest), 'node_modules', '@deepseek-ai'))) {
+    roots.push({ label: 'staged host ' + hostManifest, require: createRequire(hostManifest) })
+  }
+
+  for (const root of roots) {
+    for (const [specifier, names] of wanted) {
+      const exported = await compiledExportNames(root.require.resolve(specifier))
+      assert.ok(exported.size, `${root.label}: ${specifier} exposed no export names to read`)
+      // Reverse control: the reader must be able to report an absent name, or every assertion below is vacuous.
+      assert.equal(exported.has('TokensAbsentExportProbe'), false)
+      for (const name of names) {
+        assert.ok(exported.has(name),
+          `${root.label}: ${specifier} no longer exports ${name}`
+          + ` (it offers ${[...exported].filter(value => value.startsWith(name.replace(/\d+$/u, ''))).join(', ') || 'no similar name'})`)
+        assert.ok(bundle.includes(name), `dist/client.js is stale: it does not reference ${name}`)
+      }
+    }
   }
 })
 

@@ -212,7 +212,7 @@ function UpdateAction({ wide, readStatus, download }) {
           {
             className: `tokensVersionUpdateIcon${progress === void 0 && downloading ? " tokensVersionUpdateIndeterminate" : ""}`,
             style: ringStyle,
-            children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_dsh_client_ui_primitives.IconDownloadOutline16, { size: wide ? 14 : 18 })
+            children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_dsh_client_ui_primitives.IconDownloadOutlineRegular, { size: wide ? 14 : 18 })
           }
         )
       ]
