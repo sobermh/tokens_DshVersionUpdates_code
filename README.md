@@ -96,6 +96,17 @@ npm install
 npm run check
 ```
 
+## 宿主兼容范围
+
+插件声明 `@deepseek-ai/dsh` 的 `peerDependencies` 为 `>=0.2.0-rc.2 <0.3.0-0`，并在
+`peerDependenciesMeta` 里标记 `optional`。DSH 0.2 的宿主只按这一项判断兼容，不看
+`dsh.engine`；上界必须手写 `-0`，否则 semver 会放过下一个主版本的预发布版。标记
+`optional` 不会绕过宿主门禁，只是让 npm 不去解析安装，锁文件里不会多出第二份运行时副本。
+
+下界取本插件实际验证过的运行时（DSH 0.2.0-rc.2）。运行时侧只依赖
+`@deepseek-ai/dsh-atomic-write` 与 `@deepseek-ai/schemastery`；不要引入已在 DSH 0.2.1
+停发的 `@deepseek-ai/dsh-invariants`。
+
 ## 功能回归测试
 
 `test/` 只保留两个文件：
@@ -127,6 +138,12 @@ npm run test:cases
 发布目标仅为 `https://npm.tokensapi.ai/`，插件包版本与产品 Release 版本独立。
 
 ## 插件版本记录
+
+### 0.1.2
+
+- 去掉已在 DSH 0.2.1 停发的 `@deepseek-ai/dsh-invariants` 依赖，运行时依赖升到
+  `@deepseek-ai/dsh-atomic-write` 0.2.1-rc.2（该版本已不再要求它）。
+- 声明 `@deepseek-ai/dsh` 的双端 peer 区间并标记 `optional`，让 DSH 0.2 宿主能判断兼容。
 
 ### 0.1.1
 

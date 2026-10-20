@@ -2405,6 +2405,29 @@ test('129 the package manifest exposes the documented entry points', async () =>
   }
 })
 
+test('185 the manifest drops the discontinued invariants dependency and declares host compatibility', async () => {
+  const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+  const lock = JSON.parse(await readFile(new URL('../package-lock.json', import.meta.url), 'utf8'))
+  // 上游在 DSH 0.2.1 停发了 @deepseek-ai/dsh-invariants，任何声明都会让产品刷新锁文件时解析不到候选版本。
+  for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
+    assert.ok(!Object.hasOwn(manifest[field] ?? {}, '@deepseek-ai/dsh-invariants'),
+      `${field} must not name the discontinued @deepseek-ai/dsh-invariants`)
+  }
+  assert.ok(!Object.keys(lock.packages).some(path => path.endsWith('node_modules/@deepseek-ai/dsh-invariants')),
+    'the lockfile must not install @deepseek-ai/dsh-invariants')
+  // 宿主只按 dsh* peer 判断兼容：下界取本插件验证过的运行时，上界必须手写 -0，否则 semver 会放过下一个主版本的预发布版。
+  const dshPeers = Object.entries(manifest.peerDependencies).filter(([name]) => /^@deepseek-ai\/dsh(-|$)/u.test(name))
+  assert.ok(dshPeers.length, 'the manifest must declare a dsh runtime peer so the host can gate compatibility')
+  for (const [name, range] of dshPeers) {
+    const [lower, upper, ...rest] = range.split(' ')
+    assert.equal(rest.length, 0, `${name} peer must be a single two-sided range`)
+    assert.match(lower, /^>=0\.2\.0-rc\.2$/, `${name} peer lower bound must stay on the verified runtime`)
+    assert.match(upper, /^<\d+\.\d+\.\d+-0$/, `${name} peer upper bound must exclude the next major's prereleases`)
+    // optional 不会逃过宿主门禁，但能让 npm 不去解析安装，锁文件里就不会多出第二份运行时副本。
+    assert.equal(manifest.peerDependenciesMeta?.[name]?.optional, true, `${name} peer must stay optional`)
+  }
+})
+
 test('130 the README documents the release source that identity.js actually queries', async () => {
   const { GITHUB_OWNER, GITHUB_REPO } = await import('../identity.js')
   const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8')

@@ -1,6 +1,6 @@
 {
   "name": "@tokens/dsh-version-updates",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publishConfig": {
     "registry": "https://npm.tokensapi.ai/"
   },
@@ -75,15 +75,20 @@
     "test:cases": "node test/run-test-cases.mjs"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-atomic-write": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-invariants": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-atomic-write": "0.2.1-rc.2",
     "@deepseek-ai/schemastery": "^3.18.1"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1"
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh": ">=0.2.0-rc.2 <0.3.0-0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    }
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/cordis": "4.0.5",
     "@deepseek-ai/dsh-api-remotes": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-runtime": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-ui-primitives": "0.1.0-rc.6",
