@@ -85,7 +85,12 @@ jobs:
           ref: ${{ steps.upstream.outputs.commit }}
           path: .test-host/desktop
           persist-credentials: false
+      # ENV-05 / SOURCE-04 / DL-07 read the public TokensCowork releases through the
+      # GitHub API. Authenticated calls draw on 1000 requests/hour/repository instead
+      # of the 60/hour anonymous bucket that every hosted runner shares by exit IP.
       - run: npm run check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Pack and verify runtime resources
         run: |
           mkdir -p .release
