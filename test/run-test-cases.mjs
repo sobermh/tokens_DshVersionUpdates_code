@@ -46,9 +46,17 @@ export const TEST_UPSTREAM = {
 }
 
 // Each suite runs in its own Node test process so OS/network mocks remain isolated.
-const worker = process.argv[2]?.match(/^--case-worker=(comprehensive|plugin|publishing)$/)?.[1]
+const worker = process.argv[2]?.match(/^--case-worker=(comprehensive|plugin|publishing|host-contract)$/)?.[1]
 if (worker) {
-  const register = { comprehensive: registerComprehensiveTests, plugin: registerPluginTests, publishing: registerPublishingTests }
+  const register = {
+    comprehensive: registerComprehensiveTests,
+    plugin: registerPluginTests,
+    publishing: registerPublishingTests,
+    'host-contract': async () => {
+      const { registerHostContractCases } = await import('./host-contract/cases.mjs')
+      await registerHostContractCases()
+    },
+  }
   await register[worker]()
 } else if (process.argv.length === 3 && process.argv[2] === '--upstream') {
   if (!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/.test(TEST_UPSTREAM.repository) || !/^[a-f0-9]{40}$/.test(TEST_UPSTREAM.commit)) throw new Error('Invalid upstream source pin')
@@ -61,7 +69,7 @@ if (worker) {
 async function executeCases() {
 const testDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = dirname(testDirectory)
-const testFiles = ['run-test-cases.mjs']
+const testFiles = ['run-test-cases.mjs', 'host-contract/cases.mjs']
 if (process.argv.length !== 2) throw new Error('usage: node test/run-test-cases.mjs')
 
 const cases = parseCSV(readFileSync(join(testDirectory, 'test_cases.csv'), 'utf8'))
@@ -84,21 +92,32 @@ for (const item of cases) {
 }
 
 // Use test-runner events: a named but skipped test is not a passed case.
+// Real-host contract cases are the one exception: when they cannot run they
+// report NOT EXECUTED with a reason, which is listed apart from a pass and
+// never counted as one. `scripts/check-host-contracts.mjs` is the gate that
+// decides which of those reasons are acceptable.
+const NOT_EXECUTED = 'NOT EXECUTED: '
 const results = new Map()
 let failedTests = 0
 let passedTests = 0
 let skippedTests = 0
-for (const suite of ['comprehensive', 'plugin', 'publishing']) {
+const suites = process.env.TOKENS_CASE_SUITES
+  ? process.env.TOKENS_CASE_SUITES.split(',').filter(Boolean)
+  : ['comprehensive', 'plugin', 'publishing', 'host-contract']
+for (const suite of suites) {
 for await (const event of run({ files: [fileURLToPath(import.meta.url)], argv: ['--case-worker=' + suite], isolation: 'process' })) {
   if (!['test:pass', 'test:fail'].includes(event.type)) continue
   const data = event.data
   const file = data.file ? relative(repositoryRoot, resolve(data.file)).replaceAll('\\', '/') : ''
   const key = file + ' :: ' + data.name
+  const skipMessage = String(data.skip ?? data.todo ?? '')
   const skipped = Boolean(data.skip || data.todo)
+  const notExecuted = skipped && skipMessage.startsWith(NOT_EXECUTED)
   const passed = event.type === 'test:pass' && !skipped
-  const reason = skipped ? 'Skipped/TODO: ' + (data.skip || data.todo)
+  const reason = notExecuted ? skipMessage
+    : skipped ? 'Skipped/TODO: ' + skipMessage
     : passed ? '' : String(data.details?.error?.cause?.stack ?? data.details?.error?.message ?? 'test failed')
-  results.set(key, { passed, reason })
+  results.set(key, { passed, reason, notExecuted })
   if (skipped) skippedTests++
   else if (passed) passedTests++
   else {
@@ -111,18 +130,31 @@ for await (const event of run({ files: [fileURLToPath(import.meta.url)], argv: [
 
 let passedCases = 0
 const failures = []
+const unexecuted = []
 const unmappedTests = [...results.keys()].filter(key => !mappedTests.has(key))
 for (const key of unmappedTests) console.error('Missing CSV case mapping: ' + key)
 for (const item of cases) {
-  const reasons = item.references.flatMap(reference => {
-    const result = results.get(reference)
-    return result?.passed ? [] : [reference + ': ' + (result?.reason ?? 'not executed')]
-  })
+  const found = item.references.map(reference => [reference, results.get(reference)])
+  if (found.length > 0 && found.every(([, result]) => result?.notExecuted)) {
+    unexecuted.push({
+      id: item['用例编号'],
+      reasons: found.map(([reference, result]) => reference + ': ' + result.reason),
+    })
+    continue
+  }
+  const reasons = found.flatMap(([reference, result]) =>
+    result?.passed ? [] : [reference + ': ' + (result?.reason ?? 'not executed')])
   if (reasons.length) failures.push({ id: item['用例编号'], reasons })
   else passedCases++
 }
-console.log('\n功能回归结果：' + passedCases + '/' + cases.length + ' 条通过')
+console.log('\n功能回归结果：' + passedCases + '/' + (cases.length - unexecuted.length) + ' 条通过'
+  + (unexecuted.length ? '（另有 ' + unexecuted.length + ' 条未执行，见下）' : ''))
 for (const failure of failures) console.error(failure.id + '\n' + failure.reasons.join('\n'))
+if (unexecuted.length) {
+  // Never silent: an unrun case is listed by id with the reason it reported.
+  console.log('\n未执行用例（不计入通过；真实宿主门禁由 npm run check:host 把关）：')
+  for (const item of unexecuted) console.log('  ' + item.id + ' — ' + item.reasons.join(' | '))
+}
 console.log('总体结果：' + (failures.length || failedTests || unmappedTests.length ? '未通过' : '全部通过'))
 process.exitCode = failures.length || failedTests || unmappedTests.length ? 1 : 0
 

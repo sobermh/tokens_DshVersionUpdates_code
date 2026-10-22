@@ -115,17 +115,39 @@ npm run check
 坐席由 `@deepseek-ai/dsh-client-ui-renderer` 挂到 `Context` 上，`dsh.client.inject` 里的陌生包名
 会被宿主模块图静默忽略，不要留着。
 
+## 真实宿主契约测试
+
+插件用到的**每一个**宿主接口都有一条对真实 staged 宿主的常驻用例
+（`HOST-001`…`HOST-023`），宿主侧零打桩：宿主自带 launcher 起一次性
+`$DSH_HOME`，真实 Loader 按 `inject` 激活本插件，`desktopRuntime` 由宿主自己的
+`host-runtime-bridge.ts` 跨一对真实 `HostRpc` 投影，`webServer` 是宿主的
+`DesktopWebServer` 真绑回环端口，浏览器 Cookie 由宿主自己签发。
+
+```sh
+# 产品门禁只传这一个变量：staged 宿主的 dsh-plugin-desktop 目录
+DSH_HOST_ROOT=…\.build\desktop\dsh-plugin-desktop npm run check:host
+```
+
+没有 `DSH_HOST_ROOT` 时 23 条全部报 `NOT EXECUTED`、退出码为 1，不伪造通过。
+接口与用例的逐条对照、三处脚本化边界、三个 staged 宿主的结果，见
+[docs/host-interfaces.md](docs/host-interfaces.md)。
+
 ## 功能回归测试
 
-`test/` 只保留两个文件：
+`test/` 下有两类文件：
 
-- [test_cases.csv](test/test_cases.csv)：用例定义和断言映射。
-- [run-test-cases.mjs](test/run-test-cases.mjs)：全部自动化断言、隔离夹具和统一执行入口。
+- [test_cases.csv](test/test_cases.csv)：唯一的用例定义和断言映射表。
+- [run-test-cases.mjs](test/run-test-cases.mjs)：离线用例的自动化断言、隔离夹具和统一执行入口。
+- [host-contract/](test/host-contract/)：真实宿主契约用例——`live-host.mjs`（宿主与夹具）、
+  `client-runtime.mjs`（浏览器半边）、`cases.mjs`（断言）、`host-modules.mjs`（resolve hook）。
 
 `npm test` 与 `npm run test:cases` 使用同一入口。在独立仓库执行：
 
-`test` 目录仅保留这张 CSV 和 `run-test-cases.mjs`：前者是唯一的用例定义表，后者保存自动化实现与执行入口。
-每个保留的测试都必须关联 CSV 用例；执行器会将缺少映射、跳过及失败的测试判为未通过。
+`test_cases.csv` 是唯一的用例定义表，`run-test-cases.mjs` 是唯一的执行入口；
+真实宿主契约用例的实现放在 `test/host-contract/`，仍由这张表和这个入口统辖。
+每个保留的测试都必须关联 CSV 用例；执行器会将缺少映射、跳过及失败的测试判为未通过——
+唯一的例外是报了 `NOT EXECUTED:` 的真实宿主契约用例，它们单列、不计入通过，
+由 `npm run check:host` 判定理由是否可接受。
 
 ```sh
 npm ci --ignore-scripts --registry=https://registry.npmjs.org/
@@ -146,6 +168,12 @@ npm run test:cases
 发布目标仅为 `https://npm.tokensapi.ai/`，插件包版本与产品 Release 版本独立。
 
 ## 插件版本记录
+
+### 0.1.3
+
+- 新增真实宿主契约用例 `HOST-001`…`HOST-023` 与常驻命令 `npm run check:host`，
+  以及变异验证脚本 `scripts/verify-host-contract-mutations.mjs`。只加测试与文档，
+  运行时代码与客户端产物未改。详见 [docs/host-interfaces.md](docs/host-interfaces.md)。
 
 ### 0.1.2
 

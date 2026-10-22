@@ -1,5 +1,31 @@
 # 变更记录
 
+## [0.1.3] - 2026-10-22
+
+只加测试与文档，运行时代码与客户端产物一行未改。
+
+- 新增真实宿主契约用例 `HOST-001`…`HOST-023`，覆盖本插件用到的**每一个**宿主接口，
+  各对真实 staged 宿主真调一次：真实 Loader 的 `inject` 激活与门禁、条目 config 管道、
+  经宿主 `host-runtime-bridge.ts` 投影的 `desktopRuntime`（`updates` 快照、`request`、
+  `locale`、`registerTrayItem`/`refresh`/`invoke`、`confirmDownload`、
+  `showManualCheckResult`）、真实 `DesktopWebServer` 上的精确路由与同源围栏、
+  真实 Connection 上的 RPC 通道与其认证围栏、`@deepseek-ai/dsh-atomic-write`、
+  fiber 卸载、宿主自己的 `evaluatePluginCompatibility`、安装包落盘与复用，
+  以及浏览器半边的 `__ModuleLoader__` 协议、真实 `SlotRegistry` 坐席与真实
+  浏览器 Connection 回环。宿主侧零打桩，详见 [`docs/host-interfaces.md`](host-interfaces.md)。
+- 新增常驻命令 `npm run check:host`：只认 `DSH_HOST_ROOT`（staged 宿主的
+  `dsh-plugin-desktop` 目录），内部映射到本仓库原有的 `TOKENS_HOST_ROOT` /
+  `TOKENS_HARNESS_ROOT` / `DSH_RUNTIME_ROOT`。没有宿主时 23 条全部报
+  `NOT EXECUTED` 且退出码为 1；只有「本代宿主没有这个接口」和「本平台不发布该产物」
+  两类理由会被单列接受，其余未执行一律判失败。
+- 新增 `scripts/verify-host-contract-mutations.mjs`：逐个把被测路径弄坏，
+  要求**恰好**预期的那几条用例变红，防止契约用例空转或写得过死。
+- 三个 staged 宿主实测：0.2.1-rc.2 与 0.2.0-rc.2 各 23/23；0.1.5-rc.2 19/23，
+  未执行的四条都是本代宿主没有该接口（0.1 的 app-boot 无兼容评估器、0.1 线是
+  DSH 0.2 之前的浏览器运行时）。
+- `test/test_cases.csv` 仍是唯一用例清单，新增 23 行；`npm test` 把未执行的契约
+  用例单列、不计入通过，也不因缺宿主而变红。
+
 ## [0.1.2] - 2026-10-20
 
 - 去掉已在 DSH 0.2.1 停发的 `@deepseek-ai/dsh-invariants` 依赖；运行时依赖只剩
@@ -29,3 +55,4 @@
 
 [0.1.1]: https://github.com/sobermh/tokens_DshVersionUpdates_code/compare/2ff0e212b5d487b6762c4c1412d59b83c89eab3a...v0.1.1
 [0.1.2]: https://github.com/sobermh/tokens_DshVersionUpdates_code/compare/v0.1.1...v0.1.2
+[0.1.3]: https://github.com/sobermh/tokens_DshVersionUpdates_code/compare/v0.1.2...v0.1.3
