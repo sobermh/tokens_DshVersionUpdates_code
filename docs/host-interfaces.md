@@ -34,7 +34,24 @@ DSH_HOST_ROOT=… node scripts/verify-host-contract-mutations.mjs
 | `test/host-contract/cases.mjs` | `HOST-001`…`HOST-023` 的断言 |
 | `test/host-contract/host-modules.mjs` | 只读 resolve hook，把 `@deepseek-ai/*` 指向 staged 宿主 |
 | `scripts/check-host-contracts.mjs` | `npm run check:host`：变量映射、多宿主、未执行理由的准入判定 |
+| `scripts/test-report-summary.mjs` | 读子进程的测试报告：`tap` 与 `spec` 两种格式都认，并与报告器自己的计数对账 |
 | `scripts/verify-host-contract-mutations.mjs` | 变异验证矩阵 |
+
+### 报告器无关（T0050）
+
+子进程的结果是从 `node:test` 的报告里读的，而**报告器是 Node 自己选的**：到 Node 22
+为止，stdout 不是终端时默认写 TAP（`ok 1 - HOST-001 …`），Node 23 起恒为 `spec`
+（`✔ HOST-001 …`）。只认 `spec` 的那版脚本在 CI 的 Node 22 上把 23 条全过的运行汇总成
+「通过 0/0」并退出 1，而本机 Node 24 完全复现不出来。
+
+现在两种格式都解析，并把报告器自己打印的计数（`ℹ pass N` / `# pass N`）与数出来的
+用例行对账：对不上就报「读不懂测试报告」并判失败，所以再冒出第三种格式会明着红，不会
+悄悄汇总成 0。用例 GATE-01 把三条临时用例分别在 `tap`、`spec` 和本机默认报告器下真跑
+一遍来守这件事。本机要复现 CI 那一版的失败，强制换报告器即可：
+
+```sh
+NODE_OPTIONS=--test-reporter=tap DSH_HOST_ROOT=… npm run check:host
+```
 
 ## 真实到什么程度
 

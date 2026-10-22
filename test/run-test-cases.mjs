@@ -38,6 +38,7 @@ import { parseDocument } from 'yaml'
 import * as tar from 'tar'
 import { validateRelease, RELEASE_REPOSITORY } from '../scripts/validate-release.mjs'
 import { registryRelease } from '../scripts/registry-release.mjs'
+import { describeReportMismatch, summariseCaseReport } from '../scripts/test-report-summary.mjs'
 import { verifyTarball } from '../scripts/verify-tarball.mjs'
 
 export const TEST_UPSTREAM = {
@@ -2455,6 +2456,12 @@ test('185 the manifest drops the discontinued invariants dependency and declares
     assert.equal(rest.length, 0, `${name} peer must be a single two-sided range`)
     assert.match(lower, /^>=0\.2\.0-rc\.2$/, `${name} peer lower bound must stay on the verified runtime`)
     assert.match(upper, /^<\d+\.\d+\.\d+-0$/, `${name} peer upper bound must exclude the next major's prereleases`)
+    // 上界只挡主版本：内核的 0.x 小版本升级不该逼这个插件只为改一行声明重发一版，
+    // 真正判断兼容的是 `npm run check:host` 的真实宿主契约门禁（用户 2026-10-22 的策略）。
+    const verifiedMajor = Number(lower.replace('>=', '').split('.')[0])
+    const upperMajor = Number(upper.replace('<', '').split('.')[0])
+    assert.ok(upperMajor > verifiedMajor,
+      `${name} peer upper bound ${upper} must not stop below the next major after ${lower}`)
     // optional 不会逃过宿主门禁，但能让 npm 不去解析安装，锁文件里就不会多出第二份运行时副本。
     assert.equal(manifest.peerDependenciesMeta?.[name]?.optional, true, `${name} peer must stay optional`)
   }
@@ -3577,6 +3584,71 @@ test('workflow parses and gates automatic and manual publication on checks', asy
   }
   assert.ok(workflow.jobs.check.steps.some(s => s.run === 'npm run check'));
   assert.ok(workflow.jobs.check.steps.some(s => s.with?.path === '.test-host/desktop'));
+});
+
+// The gate reads its child's results out of the test report, and Node decides
+// on its own which reporter writes it: up to Node 22 a piped stdout gets
+// `tap`, Node 23 and later always get `spec`. Reading one format only turned a
+// 23/23 CI run into "通过 0/0" and reddened the product gate (T0050), so this
+// case runs a throwaway suite under both reporters and under whatever this Node
+// picks by itself, and requires the same summary from each.
+test('the host-contract gate summary reads either reporter node:test may pick', async () => {
+  const probeDirectory = await mkdtemp(join(tmpdir(), 'tokens-version-updates-reporter-'));
+  try {
+    const probe = join(probeDirectory, 'probe.mjs');
+    const reason = 'NOT EXECUTED: host-generation: this host has no such interface';
+    await writeFile(probe, [
+      "import test from 'node:test'",
+      "test('HOST-901 passes', () => {})",
+      `test('HOST-902 cannot run here', { skip: ${JSON.stringify(reason)} }, () => {})`,
+      "test('HOST-903 fails', () => { throw new Error('a mutation bites') })",
+      '',
+    ].join('\n'));
+    // This case runs inside a test process, and node:test marks its children
+    // with NODE_TEST_CONTEXT so they report through the internal v8 serialiser
+    // instead of a text reporter. The gate's child never inherits that, so the
+    // probe must not either, or it would report in a format neither the gate
+    // nor a terminal ever sees.
+    const env = { ...process.env };
+    delete env.NODE_TEST_CONTEXT;
+    // stdio is piped here, which is exactly the CI shape that chose `tap`.
+    for (const argv of [[], ['--test-reporter=tap'], ['--test-reporter=spec', '--test-reporter-destination=stdout']]) {
+      const label = argv.length ? argv.join(' ') : 'this Node\'s default reporter';
+      const result = childProcess.spawnSync(process.execPath, [...argv, probe], { encoding: 'utf8', env });
+      const summary = summariseCaseReport(`${result.stdout}${result.stderr}`);
+      assert.equal(describeReportMismatch(summary), undefined, `${label}: report must be readable`);
+      assert.deepEqual(summary.passed, ['HOST-901'], `${label}: passing case`);
+      assert.deepEqual(summary.failed, ['HOST-903'], `${label}: failing case`);
+      assert.deepEqual(summary.skipped, [{ id: 'HOST-902', reason }], `${label}: unexecuted case and its reason`);
+    }
+  } finally {
+    await rm(probeDirectory, { recursive: true, force: true });
+  }
+
+  // A frozen transcript of what the CI runner actually printed, so the TAP
+  // reading keeps working even if no Node on this machine still defaults to it.
+  const ciTap = ['TAP version 13',
+    '# Subtest: HOST-001 the real Loader activates this work tree through the declared inject',
+    'ok 1 - HOST-001 the real Loader activates this work tree through the declared inject',
+    '  ---', '  duration_ms: 1575.6', "  type: 'test'", '  ...',
+    '# Subtest: HOST-018 the plugin declares a range this host accepts',
+    'ok 2 - HOST-018 the plugin declares a range this host accepts # SKIP NOT EXECUTED: host-generation: no evaluator',
+    '1..2', '# tests 2', '# suites 0', '# pass 1', '# fail 0', '# cancelled 0', '# skipped 1', '# todo 0'].join('\n');
+  const fromCI = summariseCaseReport(ciTap);
+  assert.deepEqual(fromCI.passed, ['HOST-001']);
+  assert.deepEqual(fromCI.skipped, [{ id: 'HOST-018', reason: 'NOT EXECUTED: host-generation: no evaluator' }]);
+  assert.equal(describeReportMismatch(fromCI), undefined);
+
+  // And a format nobody taught the parser must fail loudly rather than
+  // summarise zero: the counters disagree with the cases that could be read.
+  const unknownFormat = summariseCaseReport(['.FS', 'ℹ tests 3', 'ℹ pass 1', 'ℹ fail 1', 'ℹ skipped 1'].join('\n'));
+  assert.deepEqual(unknownFormat.passed, []);
+  assert.match(String(describeReportMismatch(unknownFormat)), /读不懂测试报告/u);
+
+  // A report with no counters at all is just as unreadable: that is what a
+  // child that never ran its suite, or one reporting through node:test's v8
+  // serialiser, leaves behind.
+  assert.match(String(describeReportMismatch(summariseCaseReport('Error: boom'))), /没有任何计数行/u);
 });
 
 }

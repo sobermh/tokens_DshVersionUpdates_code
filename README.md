@@ -98,10 +98,14 @@ npm run check
 
 ## 宿主兼容范围
 
-插件声明 `@deepseek-ai/dsh` 的 `peerDependencies` 为 `>=0.2.0-rc.2 <0.3.0-0`，并在
+插件声明 `@deepseek-ai/dsh` 的 `peerDependencies` 为 `>=0.2.0-rc.2 <1.0.0-0`，并在
 `peerDependenciesMeta` 里标记 `optional`。DSH 0.2 的宿主只按这一项判断兼容，不看
 `dsh.engine`；上界必须手写 `-0`，否则 semver 会放过下一个主版本的预发布版。标记
 `optional` 不会绕过宿主门禁，只是让 npm 不去解析安装，锁文件里不会多出第二份运行时副本。
+
+上界只挡主版本，不卡 `0.x` 的小版本：版本号预测不了兼容性（内核 0.2.0→0.2.1 的 rc
+小版本就打坏过别的插件），真正判断兼容的是下面的真实宿主契约门禁；上界写窄只会让契约
+全绿的插件为改一行声明重发一版。
 
 下界取本插件实际验证过的运行时（DSH 0.2.0-rc.2）。运行时侧只依赖
 `@deepseek-ai/dsh-atomic-write` 与 `@deepseek-ai/schemastery`；不要引入已在 DSH 0.2.1
@@ -168,6 +172,14 @@ npm run test:cases
 发布目标仅为 `https://npm.tokensapi.ai/`，插件包版本与产品 Release 版本独立。
 
 ## 插件版本记录
+
+### 0.1.4
+
+- `check:host` 的汇总不再依赖 Node 选中的测试报告器：Node 22 把结果写成 TAP，
+  Node 23 起恒为 spec，只认 spec 让 CI 上 23/23 的运行汇总成 0/0。两种格式都解析，
+  并和报告器自己打印的计数对账，对不上就报"读不懂测试报告"而不是汇总为 0（GATE-01）。
+- `@deepseek-ai/dsh` 的 peer 上界放宽到 `<1.0.0-0`（下界不动），上界只挡主版本。
+- 只改测试基建与声明，运行时代码与客户端产物未改。
 
 ### 0.1.3
 

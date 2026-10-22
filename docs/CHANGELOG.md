@@ -1,5 +1,25 @@
 # 变更记录
 
+## [0.1.4] - 2026-10-23
+
+只改测试基建与清单声明，运行时代码与客户端产物一行未改。
+
+- 修 `npm run check:host` 在 CI 上把全绿的运行判成失败：它从子进程的测试报告里数
+  `✔ HOST-\d+` 行，那是 `spec` 报告器的格式，而 Node 22 在 stdout 不是终端时默认写
+  TAP（`ok 1 - …`），Node 23 起才恒为 `spec`。v0.7.4 的 Windows 门禁跑在 Node
+  22.23.2 上，于是 23 条用例 `# pass 23 / # fail 0` 却汇总成「通过 0/0」、退出码 1
+  （T0050）；本机 Node 24 复现不出来。
+- 新增 `scripts/test-report-summary.mjs`：一个纯函数，两种报告器格式都解析，并把
+  报告器自己打印的计数（`ℹ pass N` / `# pass N`）与数出来的用例行对账——对不上就
+  报「读不懂测试报告」，所以将来再冒出第三种格式会明着失败，不会悄悄汇总成 0。
+  `scripts/verify-host-contract-mutations.mjs` 同一处假设一并改掉。
+- 新增常驻用例 GATE-01：把三条临时用例分别在 `tap`、`spec` 和本机默认报告器下真跑
+  一遍，要求三份输出解析出同一份通过/失败/未执行；再解析一段 CI 当时打印的 TAP 片段，
+  以及一段没有用例行只有计数的未知格式，要求后者报错而不是汇总为 0。
+- `@deepseek-ai/dsh` 的 peer 上界由 `<0.3.0-0` 放宽到 `<1.0.0-0`，下界
+  `>=0.2.0-rc.2` 不动：上界只挡主版本，小版本的兼容性由 `check:host` 的真实宿主契约
+  门禁把关（用户 2026-10-22 的策略）。PACK-03 同步加断言，窄上界会判失败。
+
 ## [0.1.3] - 2026-10-22
 
 只加测试与文档，运行时代码与客户端产物一行未改。
@@ -56,3 +76,4 @@
 [0.1.1]: https://github.com/sobermh/tokens_DshVersionUpdates_code/compare/2ff0e212b5d487b6762c4c1412d59b83c89eab3a...v0.1.1
 [0.1.2]: https://github.com/sobermh/tokens_DshVersionUpdates_code/compare/v0.1.1...v0.1.2
 [0.1.3]: https://github.com/sobermh/tokens_DshVersionUpdates_code/compare/v0.1.2...v0.1.3
+[0.1.4]: https://github.com/sobermh/tokens_DshVersionUpdates_code/compare/v0.1.3...v0.1.4

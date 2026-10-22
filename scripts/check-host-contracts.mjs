@@ -15,7 +15,12 @@
  *   - any case fails;
  *   - any case did not execute for a reason outside the allow-list, which is
  *     only "this host generation has no such interface" and "this platform
- *     publishes no such artifact". A case can never stop running quietly.
+ *     publishes no such artifact". A case can never stop running quietly;
+ *   - the child's report could not be read, i.e. the case lines counted here
+ *     disagree with the counters the reporter printed for the same run.
+ *
+ * The child's results are read by `scripts/test-report-summary.mjs`, which
+ * understands both reporters Node may choose on its own — see the note there.
  */
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
@@ -24,6 +29,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { ALLOWED_SKIP_PREFIXES } from '../test/host-contract/live-host.mjs'
+import { describeReportMismatch, summariseCaseReport } from './test-report-summary.mjs'
 
 const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const runner = path.join(repositoryRoot, 'test', 'run-test-cases.mjs')
@@ -67,11 +73,14 @@ async function checkOne(root) {
   child.stderr.on('data', (chunk) => { output += chunk; process.stderr.write(chunk) })
   const code = await new Promise(resolve => child.once('close', resolve))
 
-  const passed = [...output.matchAll(/^✔ (HOST-\d+) /gmu)].map(match => match[1])
-  const failed = [...output.matchAll(/^✖ (HOST-\d+) /gmu)].map(match => match[1])
-  const skipped = [...output.matchAll(/^﹣ (HOST-\d+) [^#]*# (NOT EXECUTED: .*)$/gmu)]
-    .map(match => ({ id: match[1], reason: NOT_EXECUTED.exec(match[2])?.[1] ?? match[2] }))
-  return { root: resolved, code, passed: [...new Set(passed)], failed: [...new Set(failed)], skipped }
+  // Read the report whichever reporter wrote it: Node 22 prints `tap` into a
+  // pipe, Node 23 and later always print `spec`. Counting one format only is
+  // what made a green CI run summarise 0/0 (T0050).
+  const summary = summariseCaseReport(output)
+  const unreadable = describeReportMismatch(summary)
+  const skipped = summary.skipped
+    .map(entry => ({ id: entry.id, reason: NOT_EXECUTED.exec(entry.reason)?.[1] ?? entry.reason }))
+  return { root: resolved, code, passed: summary.passed, failed: summary.failed, skipped, unreadable }
 }
 
 const roots = hostRoots()
@@ -110,8 +119,11 @@ for (const summary of summaries) {
   for (const entry of disallowed) {
     console.error(`  未执行且理由不被接受 ${entry.id}：${entry.reason}`)
   }
+  // Never summarise a run we could not read: the reporter's own counters have
+  // to agree with the case lines we counted.
+  if (summary.unreadable !== undefined) console.error(`  ${summary.unreadable}`)
   if (summary.code !== 0 || summary.failed.length > 0 || disallowed.length > 0
-    || summary.passed.length === 0) {
+    || summary.passed.length === 0 || summary.unreadable !== undefined) {
     failures += 1
   }
 }

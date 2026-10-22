@@ -24,6 +24,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { summariseCaseReport } from './test-report-summary.mjs'
+
 const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const runner = path.join(repositoryRoot, 'test', 'run-test-cases.mjs')
 
@@ -291,9 +293,10 @@ async function runMutation(mutation) {
     const guard = setTimeout(() => child.kill(), 3 * 60 * 1000)
     await new Promise(resolve => child.once('close', resolve))
     clearTimeout(guard)
-    const red = [...new Set([...output.matchAll(/^✖ (HOST-\d+) /gmu)].map(match => match[1]))].sort()
-    const green = [...new Set([...output.matchAll(/^✔ (HOST-\d+) /gmu)].map(match => match[1]))].sort()
-    return { red, green, output }
+    // Reporter-independent: Node picks `tap` or `spec` depending on its
+    // version and on whether stdout is a terminal (T0050).
+    const summary = summariseCaseReport(output)
+    return { red: [...summary.failed].sort(), green: [...summary.passed].sort(), output }
   } finally {
     for (const [target, before] of restore) writeFileSync(target, before)
     rmSync(sandbox, { recursive: true, force: true })
