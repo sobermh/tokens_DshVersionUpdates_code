@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join } from 'node:path'
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import Schema from '@deepseek-ai/schemastery'
 import { updateMessages } from './messages.js'
+import { renderReleaseNotes } from './release-notes.js'
 import {
   MAX_INSTALLER_BYTES,
   downloadInstaller,
@@ -40,6 +41,12 @@ export {
   verifyDownloadedInstaller,
   MAX_INSTALLER_BYTES,
 } from './download.js'
+export {
+  MAX_RELEASE_HIGHLIGHTS,
+  renderReleaseNotes,
+  selectReleaseNotesLanguage,
+  summarizeReleaseNotes,
+} from './release-notes.js'
 
 /* ====================================================================
  * 插件标识与配置
@@ -55,6 +62,12 @@ export const inject = ['desktopRuntime', 'webServer']
 
 /** Maximum response body bytes accepted from a Release document or index. */
 export const MAX_VERSION_RESPONSE_BYTES = 2 * 1024 * 1024
+
+/** Maximum release-notes characters kept from one Release body. */
+export const MAX_RELEASE_NOTES_CHARACTERS = 64 * 1024
+
+/** Bound on reopening one dialog after the user asked to read the full notes. */
+const MAX_DIALOG_PRESENTATIONS = 4
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 const MAX_STATE_BYTES = 4 * 1024
@@ -131,7 +144,7 @@ export function compareSemVerVersions(left, right) {
 
 /**
  * Check the TokensHarness GitHub repository for a newer stable Release.
- * @param {{ currentVersion: string, signal?: AbortSignal, request?: import('./index.js').UpdateRequest, endpoint?: string, fallbackEndpoint?: string, userAgent?: string }} options Check inputs.
+ * @param {{ currentVersion: string, signal?: AbortSignal, request?: import('./index.js').UpdateRequest, endpoint?: string, fallbackEndpoint?: string, userAgent?: string, notesEndpointFor?: (version: string) => string | null | undefined }} options Check inputs.
  * @returns {Promise<import('./index.js').UpdateCheckResult | null>} Comparison or null on failure.
  */
 export async function checkForStableUpdate(options) {
@@ -173,56 +186,150 @@ export async function checkForStableUpdate(options) {
       if (options.signal?.aborted === true) return null
       continue
     }
-    parsed = parseVersionResponse(body)
+    parsed = parseVersionResponse(body, current.version)
     if (parsed !== null) break
   }
   if (parsed === null) return null
+  const status = compareParsedSemVer(parsed.latest, current) > 0 ? 'update-available' : 'up-to-date'
+  // 已是最新时要显示的是已安装版本的说明，取它和「有没有更新」无关：产品把 0.7.x
+  // 标成 GitHub 预发布，稳定版筛选会滤掉它，但它的正文就在同一份文档里，按 tag 直接
+  // 取。只有文档里根本没有这一版时（降级地址只返回 latest 一条）才按 tag 再请求一次
+  // 它自己的 Release，只为拿正文；失败就是没有正文，不影响这次检查的结论。
+  const notes = status === 'update-available'
+    ? parsed.notes
+    : parsed.currentFound
+      ? parsed.currentNotes
+      : await requestReleaseNotes(options, init, request, current.version)
   return {
-    status: compareParsedSemVer(parsed.latest, current) > 0 ? 'update-available' : 'up-to-date',
+    status,
     currentVersion: current.version,
     latestVersion: parsed.latest.version,
     assets: parsed.assets,
+    notes,
   }
 }
 
 /* ====================================================================
- * 手动检查结果文案（导出）
- * 三种结果各对应一个弹窗规格：请求失败、有新版但本构建无法自动
- * 下载、已是最新。抽成纯函数以便脱离 Electron 直接断言文案。
+ * 弹窗文案（导出）
+ * 两个入口：手动检查的结果弹窗（请求失败、有新版但本构建无法自动下载、
+ * 已是最新）和确认下载弹窗。两者都带上该版本发布说明里的摘要与要点，
+ * 并在有正文时多一个「查看完整说明」按钮。拿不到正文就退回原有文案。
+ * 抽成纯函数以便脱离 Electron 直接断言文案与按钮。
  * ==================================================================== */
 
 /**
  * Describe the dialog shown after one manual update check.
  * @param {import('./index.d.ts').UpdateCheckResult | null} result Check outcome, or null on failure.
  * @param {{ productName: string, releasesPageURL: string, locale?: string }} options Branding, locale and manual download target.
- * @returns {{ type: string, title: string, message: string, detail: string }} Dialog specification.
+ * @returns {import('./index.d.ts').UpdateDialog} Dialog specification.
  */
 export function describeManualCheck(result, options) {
   const { productName, releasesPageURL } = options
   const text = updateMessages(options.locale)
   if (result === null) {
-    return {
+    return dialog({
       type: 'warning',
       title: text.unavailableTitle,
       message: text.unavailable(productName),
-      detail: text.retry,
-    }
+      blocks: [text.retry],
+      buttons: [text.ok],
+    })
   }
+  const notes = renderReleaseNotes(result.notes, options.locale)
   if (result.status === 'update-available') {
-    return {
+    return dialog({
       type: 'info',
       title: text.availableTitle(productName),
       message: text.available(productName, result.latestVersion),
-      detail: text.manual
-        + `\n\n${releasesPageURL}`,
-    }
+      blocks: [notes, text.manual, releasesPageURL],
+      buttons: [text.ok],
+      notes,
+      notesLabel: text.viewNotes,
+      notesURL: releaseTagPageURL(releasesPageURL, result.latestVersion),
+    })
   }
-  return {
+  return dialog({
     type: 'info',
     title: text.currentTitle(productName),
     message: text.current(productName),
-    detail: text.installed(result.currentVersion),
+    blocks: [text.installed(result.currentVersion), notes],
+    buttons: [text.ok],
+    notes,
+    notesLabel: text.viewNotes,
+    notesURL: releaseTagPageURL(releasesPageURL, result.currentVersion),
+  })
+}
+
+/**
+ * Describe the dialog that asks whether to download one available update.
+ * @param {string} version Stable version offered for download.
+ * @param {unknown} releaseNotes Raw Release body for that version, when the check carried one.
+ * @param {{ productName: string, releasesPageURL: string, locale?: string }} options Branding, locale and release page target.
+ * @returns {import('./index.d.ts').UpdateDialog} Dialog specification.
+ */
+export function describeDownloadPrompt(version, releaseNotes, options) {
+  const { productName, releasesPageURL } = options
+  const text = updateMessages(options.locale)
+  const notes = renderReleaseNotes(releaseNotes, options.locale)
+  return dialog({
+    type: 'info',
+    title: text.availableTitle(productName),
+    message: text.available(productName, version),
+    blocks: [notes, text.confirm],
+    buttons: [text.download, text.later],
+    // 「稍后」是取消键：多出来的说明按钮不该变成关掉弹窗的那个。
+    defaultId: 1,
+    cancelId: 1,
+    notes,
+    notesLabel: text.viewNotes,
+    notesURL: releaseTagPageURL(releasesPageURL, version),
+  })
+}
+
+/**
+ * Resolve one version's Release page from the product's releases page URL.
+ * @param {string} releasesPageURL Page showing the newest Release.
+ * @param {string} version Stable version whose own page is wanted.
+ * @returns {string} Per-version Release page, or the given page when its shape is unknown.
+ */
+export function releaseTagPageURL(releasesPageURL, version) {
+  if (typeof releasesPageURL !== 'string' || !isStableVersion(version)) return releasesPageURL
+  return /\/releases\/latest\/?$/u.test(releasesPageURL)
+    ? releasesPageURL.replace(/\/releases\/latest\/?$/u, `/releases/tag/v${version}`)
+    : releasesPageURL
+}
+
+/**
+ * Resolve one version's own Release API URL from the latest-Release endpoint.
+ * @param {string} endpoint Endpoint answering with the newest Release.
+ * @param {string} version Stable version whose own Release is wanted.
+ * @returns {string | null} Per-tag Release URL, or null when the endpoint shape is unknown.
+ */
+export function releaseNotesEndpoint(endpoint, version) {
+  if (typeof endpoint !== 'string' || !isStableVersion(version)) return null
+  if (!endpoint.startsWith('https://') || !/\/releases\/latest\/?$/u.test(endpoint)) return null
+  return endpoint.replace(/\/releases\/latest\/?$/u, `/releases/tags/v${version}`)
+}
+
+/**
+ * Show one dialog specification, reopening it each time the user asks for the full notes.
+ * @param {import('./index.d.ts').UpdateDialog} spec Specification from describeManualCheck or describeDownloadPrompt.
+ * @param {{ showMessageBox: (options: Record<string, unknown>) => Promise<{ response: number }>, openExternal?: (url: string) => Promise<unknown> }} native Native dialog and browser hooks.
+ * @returns {Promise<number>} Index of the button that closed the dialog.
+ */
+export async function presentUpdateDialog(spec, native) {
+  const { notesButtonId, notesURL, ...box } = spec
+  for (let shown = 0; shown < MAX_DIALOG_PRESENTATIONS; shown += 1) {
+    const { response } = await native.showMessageBox(box)
+    if (response !== notesButtonId) return response
+    try {
+      await native.openExternal?.(notesURL)
+    } catch {
+      // A browser that will not open must not decide this update for the user.
+    }
   }
+  // The notes button is not an answer; a user who only ever presses it cancels.
+  return box.cancelId
 }
 
 /* ====================================================================
@@ -355,6 +462,7 @@ export function apply(ctx, config) {
     let checking = false
     let availableVersion
     let availableAssets = []
+    let availableNotes = ''
     let downloadingVersion
     let state = EMPTY_STATE
     let pollTimer
@@ -433,6 +541,7 @@ export function apply(ctx, config) {
             endpoint: releaseIndexEndpoint,
             fallbackEndpoint: releaseEndpoint,
             userAgent: productName,
+            notesEndpointFor: version => releaseNotesEndpoint(releaseEndpoint, version),
           })
         } catch {
           return null
@@ -455,26 +564,27 @@ export function apply(ctx, config) {
         ? result.latestVersion
         : undefined
       availableAssets = availableVersion === undefined ? [] : result.assets ?? []
+      availableNotes = availableVersion === undefined ? '' : result.notes ?? ''
       refreshTray()
       return availableVersion
     }
 
     /* ---------------- 品牌确认弹窗（无 Electron 时回退） ---------------- */
+    /** 原生弹窗与浏览器入口；「查看完整说明」按钮要用后者开 Release 页。 */
+    const nativeDialog = electron => ({
+      showMessageBox: options => electron.dialog.showMessageBox(options),
+      openExternal: url => electron.shell?.openExternal(url),
+    })
+
     const confirmDownload = async (version) => {
       const electron = await loadElectron()
       if (electron === null) return adapter.confirmDownload(version)
-      const text = updateMessages(ctx.desktopRuntime.locale)
-      const result = await electron.dialog.showMessageBox({
-        type: 'info',
-        title: text.availableTitle(productName),
-        message: text.available(productName, version),
-        detail: text.confirm,
-        buttons: [text.download, text.later],
-        defaultId: 1,
-        cancelId: 1,
-        noLink: true,
+      const spec = describeDownloadPrompt(version, availableNotes, {
+        productName,
+        releasesPageURL,
+        locale: ctx.desktopRuntime.locale,
       })
-      return result.response === 0
+      return await presentUpdateDialog(spec, nativeDialog(electron)) === 0
     }
 
     const announceReady = async (version, path) => {
@@ -497,12 +607,12 @@ export function apply(ctx, config) {
     const showManualCheckResult = async (result) => {
       const electron = await loadElectron()
       if (electron === null) return adapter.showManualCheckResult(result)
-      await electron.dialog.showMessageBox({
-        ...describeManualCheck(result, { productName, releasesPageURL, locale: ctx.desktopRuntime.locale }),
-        buttons: [updateMessages(ctx.desktopRuntime.locale).ok],
-        defaultId: 0,
-        noLink: true,
+      const spec = describeManualCheck(result, {
+        productName,
+        releasesPageURL,
+        locale: ctx.desktopRuntime.locale,
       })
+      await presentUpdateDialog(spec, nativeDialog(electron))
     }
 
     /* ------------------- 确认下载与安装包移交 ------------------- */
@@ -725,7 +835,7 @@ async function readLimitedBody(response) {
   }
 }
 
-function parseVersionResponse(body) {
+function parseVersionResponse(body, currentVersion) {
   let value
   try {
     value = JSON.parse(body)
@@ -741,7 +851,71 @@ function parseVersionResponse(body) {
       selected = parsed
     }
   }
-  return selected
+  if (selected === null) return null
+  // 已安装版本的正文按 tag 取，不经稳定版筛选：产品把 0.7.x 标成 GitHub 预发布，
+  // 筛选会把它滤掉，而「已是最新」的弹窗要显示的正是这一版改了什么。
+  const currentNotes = findReleaseNotes(releases, currentVersion)
+  return { ...selected, currentFound: currentNotes !== null, currentNotes: currentNotes ?? '' }
+}
+
+/**
+ * 文档里没有已安装版本时，按 tag 再请求一次它自己的 Release，只为拿正文。
+ * 任何失败都只是没有正文：这次检查的结论已经有了，不能因为说明而失败。
+ */
+async function requestReleaseNotes(options, init, request, version) {
+  const endpoint = options.notesEndpointFor?.(version)
+  if (typeof endpoint !== 'string' || !endpoint.startsWith('https://')) return ''
+  if (options.signal?.aborted === true) return ''
+  try {
+    const response = await request(endpoint, init)
+    if (response.status !== 200) return ''
+    const value = JSON.parse(await readLimitedBody(response))
+    return findReleaseNotes(Array.isArray(value) ? value : [value], version) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+/** 按 tag 找出某个版本的正文；返回 null 表示这份文档里根本没有这一版。 */
+function findReleaseNotes(releases, version) {
+  if (typeof version !== 'string' || version === '') return null
+  const tag = `v${version}`
+  for (const release of releases) {
+    if (!isRecord(release) || release.draft === true || release.tag_name !== tag) continue
+    return releaseBody(release)
+  }
+  return null
+}
+
+/** 一个 Release 的正文，超长截断；缺失或不是字符串时当作没有正文。 */
+function releaseBody(value) {
+  const body = isRecord(value) ? value.body : undefined
+  if (typeof body !== 'string') return ''
+  return body.length > MAX_RELEASE_NOTES_CHARACTERS
+    ? body.slice(0, MAX_RELEASE_NOTES_CHARACTERS)
+    : body
+}
+
+/**
+ * 把一个弹窗规格拼成原生 showMessageBox 的入参，并带上说明按钮的位置。
+ * 空白段落直接丢掉，所以拿不到正文时 detail 与加说明之前逐字相同。
+ */
+function dialog(spec) {
+  const hasNotes = typeof spec.notes === 'string' && spec.notes !== ''
+    && typeof spec.notesURL === 'string' && spec.notesURL !== ''
+  const buttons = hasNotes ? [...spec.buttons, spec.notesLabel] : [...spec.buttons]
+  return {
+    type: spec.type,
+    title: spec.title,
+    message: spec.message,
+    detail: spec.blocks.filter(block => typeof block === 'string' && block !== '').join('\n\n'),
+    buttons,
+    defaultId: spec.defaultId ?? 0,
+    cancelId: spec.cancelId ?? 0,
+    noLink: true,
+    notesButtonId: hasNotes ? buttons.length - 1 : -1,
+    notesURL: hasNotes ? spec.notesURL : '',
+  }
 }
 
 function resolveHTTPSURL(configured, fallback) {
@@ -762,7 +936,7 @@ function parseStableRelease(value) {
     || !value.tag_name.startsWith('v')) return null
   const latest = parseCanonicalStableVersion(value.tag_name.slice(1))
   if (latest === null) return null
-  return { latest, assets: parseReleaseAssets(value.assets) }
+  return { latest, assets: parseReleaseAssets(value.assets), notes: releaseBody(value) }
 }
 
 function parseReleaseAssets(value) {

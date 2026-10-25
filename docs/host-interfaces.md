@@ -89,26 +89,26 @@ NODE_OPTIONS=--test-reporter=tap DSH_HOST_ROOT=… npm run check:host
 
 | 宿主接口（插件真正依赖的部分） | 代码位置 | 用例 |
 |---|---|---|
-| Loader 按 `export const inject = ['desktopRuntime','webServer']` 激活；入口必须解析到本工作树 | `index.js:54` | HOST-001 |
+| Loader 按 `export const inject = ['desktopRuntime','webServer']` 激活；入口必须解析到本工作树 | `index.js:61` | HOST-001 |
 | 未满足的 inject 必须让插件不运行（0.1 硬失败 / 0.2 warning 都接受） | 同上 | HOST-002 |
-| 条目 `config` 经宿主 schemastery 管道到达 `apply`（`productName`/`githubOwner`/`githubRepo`/`releaseIndexURL`/`releaseAPIURL`） | `index.js:68-82,334-352` | HOST-003 |
-| `desktopRuntime.updates` 快照：`isPackaged`/`canDownload`/`currentVersion`/`statePath` 经真实桥送达 | `index.js:333` | HOST-004 |
-| `desktopRuntime.updates.request`（桥上的文本 IPC，Host 侧重建 `Response`） | `index.js:425` | HOST-005 |
-| 同一 request 上的降级地址顺序 | `index.js:349-357,425` | HOST-006 |
-| `desktopRuntime.locale`（桥上的实时 getter，切换后会重发托盘） | `index.js:466,483,501,640` | HOST-007 |
-| `desktopRuntime.registerTrayItem`：`group`/`order`/`label()` 的跨桥投影与 `refresh()` | `index.js:635` | HOST-008 |
-| 托盘 `invoke()` 从原生侧回到插件 | `index.js:645` | HOST-009 |
-| `updates.confirmDownload` / `updates.showManualCheckResult`（无 Electron 时的回退路径） | `index.js:461,499` | HOST-010 |
-| `webServer.port` + `webServer.register({kind:'exact'})` 的真实回环 HTTP | `index.js:647-657` | HOST-011 |
-| 同一路由基于真实绑定端口的同源围栏（反向对照） | `index.js:243,935` | HOST-012 |
-| `ctx.inject(['connection'])` 的响应式注入 + `connection.rpc.handle` | `index.js:677-690` | HOST-013 |
-| 同一通道的 `download` 端点与未知端点 | `index.js:682-684` | HOST-014 |
+| 条目 `config` 经宿主 schemastery 管道到达 `apply`（`productName`/`githubOwner`/`githubRepo`/`releaseIndexURL`/`releaseAPIURL`） | `index.js:83-94,440-457` | HOST-003 |
+| `desktopRuntime.updates` 快照：`isPackaged`/`canDownload`/`currentVersion`/`statePath` 经真实桥送达 | `index.js:440` | HOST-004 |
+| `desktopRuntime.updates.request`（桥上的文本 IPC，Host 侧重建 `Response`） | `index.js:540` | HOST-005 |
+| 同一 request 上的降级地址顺序 | `index.js:445-457,540-542` | HOST-006 |
+| `desktopRuntime.locale`（桥上的实时 getter，切换后会重发托盘） | `index.js:585,613,750` | HOST-007 |
+| `desktopRuntime.registerTrayItem`：`group`/`order`/`label()` 的跨桥投影与 `refresh()` | `index.js:745` | HOST-008 |
+| 托盘 `invoke()` 从原生侧回到插件 | `index.js:753` | HOST-009 |
+| `updates.confirmDownload` / `updates.showManualCheckResult`（无 Electron 时的回退路径），以及结果里该版本发布说明正文经真实桥原样到达 | `index.js:581,609` | HOST-010 |
+| `webServer.port` + `webServer.register({kind:'exact'})` 的真实回环 HTTP | `index.js:757-767` | HOST-011 |
+| 同一路由基于真实绑定端口的同源围栏（反向对照） | `index.js:350,1109` | HOST-012 |
+| `ctx.inject(['connection'])` 的响应式注入 + `connection.rpc.handle` | `index.js:788-797` | HOST-013 |
+| 同一通道的 `download` 端点与未知端点 | `index.js:792-794` | HOST-014 |
 | Connection 自己的认证与 Host 围栏（反向对照） | 宿主侧，经本插件通道观测 | HOST-015 |
-| `@deepseek-ai/dsh-atomic-write` 的 `writeFileAtomic(adapter.statePath, …)` | `index.js:6,392` | HOST-016 |
-| 真实 fiber 卸载时撤回托盘与路由 | `index.js:661-676` | HOST-017 |
+| `@deepseek-ai/dsh-atomic-write` 的 `writeFileAtomic(adapter.statePath, …)` | `index.js:6,500` | HOST-016 |
+| 真实 fiber 卸载时撤回托盘与路由 | `index.js:771-781` | HOST-017 |
 | 宿主 app-boot 的 `evaluatePluginCompatibility` 对本插件声明的判定 | `package.json` peer | HOST-018 |
-| 安装包字节走 `globalThis.fetch` 而**不**走宿主 IPC；落盘目录与复用 | `index.js:536-556`，`download.js` | HOST-019 |
-| `adapter.canDownload=false` 时不提示安装 | `index.js:453-457` | HOST-020 |
+| 安装包字节走 `globalThis.fetch` 而**不**走宿主 IPC；落盘目录与复用 | `index.js:658-670`，`download.js` | HOST-019 |
+| `adapter.canDownload=false` 时不提示安装 | `index.js:561-570` | HOST-020 |
 | 宿主 `__ModuleLoader__` 协议 + 真实 `SlotRegistry` 的 `sidebar.footer.action` 坐席 | `src/client/index.tsx:144`，`dist/client.js` | HOST-021 |
 | 渲染时才解析的名字：primitives 导出、sidebar 插槽声明、`dsh.client.inject` | `src/client/index.tsx:5`，`package.json` | HOST-022 |
 | 坐席 `inject()` 面经真实浏览器 Connection 打到活宿主 | `src/client/index.tsx:137-152` | HOST-023 |

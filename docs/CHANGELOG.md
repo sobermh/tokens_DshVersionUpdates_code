@@ -1,5 +1,28 @@
 # 变更记录
 
+## [0.1.5] - 2026-10-25
+
+检查更新的弹窗带上"更新了什么"。
+
+- 三个弹窗（已是最新、有新版本、确认下载）都加上该版本发布说明里的摘要（标题下第一
+  段）与最多 6 条要点（`## 本次更新` / `## What's New` 小节，按正文次序），并多一个
+  「查看完整说明」按钮，打开该版本自己的 Release 页 `…/releases/tag/v<version>`。点
+  这个按钮会开浏览器并重新弹出弹窗，让用户接着选；它不是答复，重弹次数有上限，到顶
+  按取消键处理，所以"稍后"仍是确认下载弹窗的默认键与取消键。
+- 正文按界面语言取中文或英文那半边，只抽纯文本（去掉标题、列表符号、链接与代码号，
+  emoji 保留），摘要与每条要点各有字数上限。产品的发布说明模板只有中文半边有摘要段，
+  英文弹窗因此只有要点。
+- 已是最新时显示的是**已安装版本**的说明：它按 `v<version>` 在同一份版本索引里找，
+  即使被标成 GitHub 预发布也找得到（产品的 0.7.x 就是这么发的），所以不额外发请求；
+  只有索引里根本没有这一版时，才按 `…/releases/tags/v<version>` 多发一次请求取正文。
+- 解析一律尽力而为：拿不到正文、正文为空或结构不符时，弹窗与加入发布说明之前逐字
+  相同，也不出现「查看完整说明」按钮。**检查更新不会因为解析发布说明而失败**，按 tag
+  取正文的那次请求失败也只是没有说明。
+- 新增 `release-notes.js`（纯函数解析，不碰网络与 Electron）与常驻用例
+  `NOTES-01`…`NOTES-06`：解析用例喂的是真实的 TokensCowork v0.7.4 Release 正文
+  （`test/fixtures/release-notes-v0.7.4.md`）。`HOST-010` 增加一条断言：结果里的正文
+  经真实宿主桥原样到达；对应变异 `drop-release-notes` 验证它不是空转。
+
 ## [0.1.4] - 2026-10-23
 
 只改测试基建与清单声明，运行时代码与客户端产物一行未改。
@@ -77,3 +100,4 @@
 [0.1.2]: https://github.com/sobermh/tokens_DshVersionUpdates_code/compare/v0.1.1...v0.1.2
 [0.1.3]: https://github.com/sobermh/tokens_DshVersionUpdates_code/compare/v0.1.2...v0.1.3
 [0.1.4]: https://github.com/sobermh/tokens_DshVersionUpdates_code/compare/v0.1.3...v0.1.4
+[0.1.5]: https://github.com/sobermh/tokens_DshVersionUpdates_code/compare/v0.1.4...v0.1.5

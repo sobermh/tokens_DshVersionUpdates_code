@@ -18,9 +18,13 @@ import {
   apply,
   checkForStableUpdate,
   compareSemVerVersions,
+  describeDownloadPrompt,
   describeManualCheck,
   parseSemVer,
+  presentUpdateDialog,
   productDataDirectory,
+  releaseNotesEndpoint,
+  releaseTagPageURL,
   resolveDownloadDirectory,
 } from '../index.js'
 import {
@@ -30,6 +34,14 @@ import {
   selectInstallerAsset,
   verifyDownloadedInstaller,
 } from '../download.js'
+import {
+  MAX_RELEASE_HIGHLIGHTS,
+  MAX_RELEASE_HIGHLIGHT_CHARACTERS,
+  MAX_RELEASE_SUMMARY_CHARACTERS,
+  renderReleaseNotes,
+  selectReleaseNotesLanguage,
+  summarizeReleaseNotes,
+} from '../release-notes.js'
 import { run } from 'node:test'
 import { readFileSync } from 'node:fs'
 import { relative } from 'node:path'
@@ -1445,7 +1457,7 @@ test('96 manual check reports up-to-date through the adapter', async () => {
     const { tray, dispose } = host.start()
     await tray.invoke()
     assert.deepEqual(host.log.manual, [{
-      status: 'up-to-date', currentVersion: '0.1.0', latestVersion: '0.1.0', assets: [],
+      status: 'up-to-date', currentVersion: '0.1.0', latestVersion: '0.1.0', assets: [], notes: '',
     }])
     await dispose()
   } finally {
@@ -2176,17 +2188,22 @@ test('182 cancellation cleans up a stalled stream even if fetch ignores the sign
 
 test('183 manual dialogs localize failure, available and current outcomes with English fallback', () => {
   const options = { productName: 'MyBrand', releasesPageURL: 'https://example.test/releases', locale: 'zh-CN' }
+  /** 没有发布说明时的按钮契约：一个确定键，没有「查看完整说明」。 */
+  const plain = label => ({ buttons: [label], defaultId: 0, cancelId: 0, noLink: true, notesButtonId: -1, notesURL: '' })
   assert.deepEqual(describeManualCheck(null, options), {
     type: 'warning', title: '无法检查更新', message: 'MyBrand 无法检查更新。', detail: '请稍后重试。',
+    ...plain('确定'),
   })
   const available = { status: 'update-available', latestVersion: '2.0.0', currentVersion: '1.0.0' }
   assert.deepEqual(describeManualCheck(available, options), {
     type: 'info', title: 'MyBrand 有可用更新', message: 'MyBrand 2.0.0 已发布。',
     detail: '此构建无法自动安装更新，请手动下载：\n\nhttps://example.test/releases',
+    ...plain('确定'),
   })
   const current = { ...available, status: 'up-to-date' }
   assert.deepEqual(describeManualCheck(current, { ...options, locale: 'zh-TW' }), {
     type: 'info', title: 'MyBrand 已是最新版本', message: 'MyBrand 暂无更新版本。', detail: '已安装版本：1.0.0',
+    ...plain('确定'),
   })
   for (const result of [null, available, current]) {
     const english = describeManualCheck(result, { ...options, locale: 'en-US' })
@@ -2649,6 +2666,7 @@ test('138 a runtime that cannot download still reports the available version to 
       currentVersion: '0.1.0',
       latestVersion: '0.2.0',
       assets: [],
+      notes: '',
     }], 'the host adapter must still learn that a newer version exists')
     await dispose()
   } finally {
@@ -2657,11 +2675,15 @@ test('138 a runtime that cannot download still reports the available version to 
 })
 
 test('139 the describeManualCheck contract stays a pure function of its inputs', () => {
-  const result = Object.freeze({ status: 'update-available', currentVersion: '0.1.2', latestVersion: '0.2.0', assets: Object.freeze([]) })
+  const result = Object.freeze({ status: 'update-available', currentVersion: '0.1.2', latestVersion: '0.2.0', assets: Object.freeze([]), notes: '# P v0.2.0\n\n摘要。\n' })
   const first = describeManualCheck(result, DIALOG_BRAND)
   const second = describeManualCheck(result, DIALOG_BRAND)
   assert.deepEqual(first, second)
-  assert.deepEqual(Object.keys(first).sort(), ['detail', 'message', 'title', 'type'])
+  // 弹窗规格就是原生 showMessageBox 的入参，外加说明按钮的位置与地址。
+  assert.deepEqual(Object.keys(first).sort(), ['buttons', 'cancelId', 'defaultId', 'detail',
+    'message', 'noLink', 'notesButtonId', 'notesURL', 'title', 'type'])
+  assert.deepEqual(describeDownloadPrompt('0.2.0', result.notes, DIALOG_BRAND),
+    describeDownloadPrompt('0.2.0', result.notes, DIALOG_BRAND))
 })
 
 /* ============ 16. 已下载安装包的复用 ============ */
@@ -3194,6 +3216,282 @@ test('170 Desktop update route rejects untrusted and non-empty requests', async 
   }
 })
 
+/* ============ 18. 发布说明的摘要与要点 ============ */
+
+/**
+ * 一份真实的发布说明正文：TokensCowork v0.7.4 的 GitHub Release body，逐字
+ * 取自 Pages 索引（`test/fixtures/release-notes-v0.7.4.md`）。弹窗要显示的就是
+ * 这种正文，所以解析用例喂的是它，不是照解析器写出来的构造数据。
+ */
+const realReleaseNotes = await readFile(new URL('fixtures/release-notes-v0.7.4.md', import.meta.url), 'utf8')
+
+/** 一份最小的双语正文，用来单独验某一段结构缺失时的行为。 */
+function notesDocument({ title = '# P v1.2.3', summary = '这一版修了点东西。', zhUpdates = '- 修好了那个按钮。', enUpdates = '- Fixed that button.' } = {}) {
+  return [title, '', summary, '', '## 本次更新', '', '### 🐛 问题修复', '', zhUpdates, '',
+    "## What's New", '', '### 🐛 Bug Fixes', '', enUpdates, ''].join('\n')
+}
+
+test('187 the real v0.7.4 notes yield one Chinese summary paragraph and at most six highlights', () => {
+  const { summary, highlights } = summarizeReleaseNotes(realReleaseNotes, 'zh-CN')
+  assert.ok(summary.startsWith('在 v0.7.3 基础上的维护版：'), summary)
+  assert.ok(summary.includes('插件真实内核契约'))
+  assert.ok(summary.length <= MAX_RELEASE_SUMMARY_CHARACTERS)
+  // 这份正文有 8 条要点（3 条 🐛 + 5 条 ⚠️），上限把它截成 6 条，次序按正文。
+  assert.equal(highlights.length, MAX_RELEASE_HIGHLIGHTS)
+  assert.ok(highlights[0].startsWith('内核日志：'), highlights[0])
+  assert.ok(highlights[2].includes('联网搜索'), highlights[2])
+  assert.ok(highlights[3].startsWith('发布门禁新增'), highlights[3])
+  for (const highlight of [...highlights, summary]) {
+    // 弹窗是纯文本：代码号、链接语法与换行都不该留下来。
+    assert.equal(/`|\]\(|\n/u.test(highlight), false, highlight)
+    assert.ok(highlight.length <= MAX_RELEASE_HIGHLIGHT_CHARACTERS + 1
+      || highlight === summary, highlight)
+  }
+  // 原文这条要点里 `code` 带代码号，去标记后只剩文字。
+  assert.ok(highlights[0].includes('名为 code 的字段'), highlights[0])
+  // 组件版本表就在同一小节里，表格行不是要点。
+  assert.equal(highlights.some(highlight => highlight.includes('| Desktop')), false)
+})
+
+test('188 a non-Chinese locale reads the English half of the real notes and never mixes the two', () => {
+  const english = selectReleaseNotesLanguage(realReleaseNotes, 'en-US')
+  assert.ok(english.startsWith("## What's New"), english.slice(0, 40))
+  const { summary, highlights } = summarizeReleaseNotes(realReleaseNotes, 'en-US')
+  // 产品的发布说明模板只有中文那半边有摘要段，英文半边直接从要点开始。
+  assert.equal(summary, '')
+  assert.equal(highlights.length, MAX_RELEASE_HIGHLIGHTS)
+  assert.ok(highlights[0].startsWith('Core logs:'), highlights[0])
+  for (const highlight of highlights) assert.equal(/[一-鿿]/u.test(highlight), false, highlight)
+  // 未知语言与缺省语言都按英文读，和界面文案的回退一致。
+  for (const locale of ['fr-FR', undefined]) {
+    assert.deepEqual(summarizeReleaseNotes(realReleaseNotes, locale), { summary, highlights })
+  }
+  assert.ok(summarizeReleaseNotes(realReleaseNotes, 'zh-TW').highlights[0].startsWith('内核日志：'))
+})
+
+test('189 release-notes extraction returns nothing usable rather than failing on an unexpected body', () => {
+  for (const body of ['', '   \n\n  ', undefined, null, 42, {}, [], Symbol('x')]) {
+    assert.deepEqual(summarizeReleaseNotes(body, 'zh-CN'), { summary: '', highlights: [] })
+    assert.equal(renderReleaseNotes(body, 'zh-CN'), '')
+  }
+  // 结构不符：只有标题、只有表格、要点全在未知小节里——都只是没有要点。
+  assert.deepEqual(summarizeReleaseNotes('# P v1.2.3\n', 'zh-CN'), { summary: '', highlights: [] })
+  assert.deepEqual(summarizeReleaseNotes(notesDocument({ zhUpdates: '| 组件 | 版本 |\n|---|---|\n| DSH | 0.2.1 |' }), 'zh-CN').highlights, [])
+  assert.deepEqual(summarizeReleaseNotes('# P v1.2.3\n\n摘要。\n\n## 别的小节\n\n- 不是要点。\n', 'zh-CN'), {
+    summary: '摘要。', highlights: [],
+  })
+  // 单语的旧说明不猜语言：整段都可读。
+  assert.equal(summarizeReleaseNotes('# P v1.2.3\n\n仅中文的旧说明。\n', 'en-US').summary, '仅中文的旧说明。')
+})
+
+test('190 an up-to-date dialog carries the installed version summary, its highlights and a notes button', () => {
+  const dialog = describeManualCheck(
+    { status: 'up-to-date', currentVersion: '0.7.4', latestVersion: '0.5.25', assets: [], notes: realReleaseNotes },
+    { ...DIALOG_BRAND, locale: 'zh-CN' },
+  )
+  assert.equal(dialog.type, 'info')
+  assert.ok(dialog.detail.startsWith('已安装版本：0.7.4\n\n在 v0.7.3 基础上的维护版：'), dialog.detail)
+  assert.equal(dialog.detail.split('\n').filter(line => line.startsWith('• ')).length, MAX_RELEASE_HIGHLIGHTS)
+  assert.deepEqual(dialog.buttons, ['确定', '查看完整说明'])
+  assert.equal(dialog.notesButtonId, 1)
+  assert.equal(dialog.notesURL, 'https://github.com/TokensAPI/tokens_TokensHarness_code/releases/tag/v0.7.4')
+  assert.equal(dialog.cancelId, 0)
+  // 有新版本而本构建不能自动安装时，说明在手动下载指引之前，按钮指向新版本。
+  const available = describeManualCheck(
+    { status: 'update-available', currentVersion: '0.7.4', latestVersion: '0.8.0', assets: [], notes: realReleaseNotes },
+    { ...DIALOG_BRAND, locale: 'zh-CN' },
+  )
+  assert.ok(available.detail.startsWith('在 v0.7.3 基础上的维护版：'), available.detail)
+  assert.ok(available.detail.includes(`此构建无法自动安装更新，请手动下载：\n\n${DIALOG_BRAND.releasesPageURL}`))
+  assert.ok(available.notesURL.endsWith('/releases/tag/v0.8.0'))
+})
+
+test('191 the download prompt keeps Later as its cancel button after the notes button is added', () => {
+  const dialog = describeDownloadPrompt('0.8.0', realReleaseNotes, { ...DIALOG_BRAND, locale: 'zh-CN' })
+  assert.equal(dialog.message, 'TokensHarness 0.8.0 已发布。')
+  assert.deepEqual(dialog.buttons, ['下载', '稍后', '查看完整说明'])
+  // 「稍后」仍是默认键与取消键：多出来的说明按钮不能变成关掉弹窗的那个。
+  assert.equal(dialog.defaultId, 1)
+  assert.equal(dialog.cancelId, 1)
+  assert.equal(dialog.notesButtonId, 2)
+  assert.ok(dialog.detail.includes('• '))
+  assert.ok(dialog.detail.endsWith('\n\n现在下载此更新吗？'), dialog.detail)
+  const english = describeDownloadPrompt('0.8.0', realReleaseNotes, { ...DIALOG_BRAND, locale: 'en-US' })
+  assert.deepEqual(english.buttons, ['Download', 'Later', 'View Full Notes'])
+  assert.ok(english.detail.endsWith('\n\nDownload this update now?'))
+})
+
+test('192 a dialog without usable notes keeps exactly the copy and buttons it had before', () => {
+  for (const notes of [undefined, '', '   ']) {
+    const current = describeManualCheck(
+      { status: 'up-to-date', currentVersion: '0.7.4', latestVersion: '0.7.4', assets: [], notes },
+      DIALOG_BRAND,
+    )
+    assert.equal(current.detail, 'Installed version: 0.7.4')
+    assert.deepEqual(current.buttons, ['OK'])
+    assert.equal(current.notesButtonId, -1)
+    assert.equal(current.notesURL, '')
+
+    const available = describeManualCheck(
+      { status: 'update-available', currentVersion: '0.7.4', latestVersion: '0.8.0', assets: [], notes },
+      DIALOG_BRAND,
+    )
+    assert.equal(available.detail,
+      `This build cannot install updates automatically. Download it manually:\n\n${DIALOG_BRAND.releasesPageURL}`)
+    assert.deepEqual(available.buttons, ['OK'])
+
+    const prompt = describeDownloadPrompt('0.8.0', notes, DIALOG_BRAND)
+    assert.equal(prompt.detail, 'Download this update now?')
+    assert.deepEqual(prompt.buttons, ['Download', 'Later'])
+    assert.equal(prompt.notesButtonId, -1)
+  }
+  const failed = describeManualCheck(null, DIALOG_BRAND)
+  assert.equal(failed.detail, 'Please try again later.')
+  assert.deepEqual(failed.buttons, ['OK'])
+  assert.equal(failed.notesButtonId, -1)
+})
+
+test('193 the notes button opens the release page and reopens the dialog until a real answer', async () => {
+  const spec = describeDownloadPrompt('0.8.0', realReleaseNotes, { ...DIALOG_BRAND, locale: 'zh-CN' })
+  const native = (responses, openExternal) => {
+    const shown = []
+    const opened = []
+    return {
+      shown,
+      opened,
+      showMessageBox: async (options) => {
+        shown.push(options)
+        return { response: responses[Math.min(shown.length - 1, responses.length - 1)] }
+      },
+      openExternal: openExternal ?? (async (url) => { opened.push(url) }),
+    }
+  }
+
+  const viewThenDownload = native([spec.notesButtonId, 0])
+  assert.equal(await presentUpdateDialog(spec, viewThenDownload), 0)
+  assert.equal(viewThenDownload.shown.length, 2, '看过说明后要再弹一次，让用户接着选')
+  assert.deepEqual(viewThenDownload.opened, [spec.notesURL])
+  // Electron 只认它自己的字段：说明按钮的位置和地址不能混进 showMessageBox 的入参。
+  for (const options of viewThenDownload.shown) {
+    assert.deepEqual(Object.keys(options).sort(),
+      ['buttons', 'cancelId', 'defaultId', 'detail', 'message', 'noLink', 'title', 'type'])
+  }
+
+  // 只按说明按钮不是答复：重弹次数有上限，到顶按取消键处理。
+  const onlyNotes = native([spec.notesButtonId])
+  assert.equal(await presentUpdateDialog(spec, onlyNotes), spec.cancelId)
+  assert.equal(onlyNotes.shown.length, 4)
+  assert.deepEqual(onlyNotes.opened, Array.from({ length: 4 }, () => spec.notesURL))
+
+  // 浏览器打不开、或者宿主压根没给 openExternal，都不该影响这次更新决定。
+  const broken = native([spec.notesButtonId, 1], async () => { throw new Error('no browser') })
+  assert.equal(await presentUpdateDialog(spec, broken), 1)
+  const withoutShell = { showMessageBox: async () => ({ response: spec.notesButtonId }) }
+  assert.equal(await presentUpdateDialog(spec, withoutShell), spec.cancelId)
+
+  // 没有说明时 notesButtonId 是 -1，任何按钮都是答复，也不会去开浏览器。
+  const plain = describeDownloadPrompt('0.8.0', '', DIALOG_BRAND)
+  const answered = native([0])
+  assert.equal(await presentUpdateDialog(plain, answered), 0)
+  assert.equal(answered.shown.length, 1)
+  assert.deepEqual(answered.opened, [])
+})
+
+test('194 the installed version notes are read from the document even when GitHub marks it a prerelease', async () => {
+  const urls = []
+  const document = [
+    // 产品把 0.7.x 标成 GitHub 预发布，稳定版筛选会滤掉它——但正文要显示。
+    { tag_name: 'v0.7.4', draft: false, prerelease: true, assets: [], body: notesDocument({ summary: '这一版修了检查更新。' }) },
+    { tag_name: 'v0.5.25', draft: false, prerelease: false, assets: [], body: notesDocument({ summary: '旧的稳定版。' }) },
+  ]
+  const result = await checkForStableUpdate({
+    currentVersion: '0.7.4',
+    request: async (url) => { urls.push(url); return Response.json(document) },
+    notesEndpointFor: () => 'https://api.github.test/repos/o/r/releases/tags/v0.7.4',
+  })
+  assert.equal(result?.status, 'up-to-date')
+  assert.equal(result?.latestVersion, '0.5.25')
+  assert.equal(urls.length, 1, '同一份文档里已经有这一版的正文，不该再请求一次')
+  assert.ok(result?.notes.includes('这一版修了检查更新。'), result?.notes)
+  assert.equal(summarizeReleaseNotes(result?.notes, 'zh-CN').summary, '这一版修了检查更新。')
+
+  // 有新版本时带的是新版本自己的正文。
+  const newer = await checkForStableUpdate({
+    currentVersion: '0.7.4',
+    request: async () => Response.json({ tag_name: 'v0.8.0', draft: false, prerelease: false, assets: [], body: notesDocument({ summary: '新版本的摘要。' }) }),
+  })
+  assert.equal(newer?.status, 'update-available')
+  assert.equal(summarizeReleaseNotes(newer?.notes, 'zh-CN').summary, '新版本的摘要。')
+})
+
+test('195 a document without the installed version asks for that release by tag, and a failed ask costs only the notes', async () => {
+  const tagsEndpoint = 'https://api.github.test/repos/o/r/releases/tags/v0.7.4'
+  const olderOnly = { tag_name: 'v0.5.25', draft: false, prerelease: false, assets: [], body: notesDocument({ summary: '旧的稳定版。' }) }
+  const byTag = { tag_name: 'v0.7.4', draft: false, prerelease: true, assets: [], body: notesDocument({ summary: '按 tag 取到的摘要。' }) }
+
+  const urls = []
+  const found = await checkForStableUpdate({
+    currentVersion: '0.7.4',
+    request: async (url) => {
+      urls.push(url)
+      return Response.json(url === tagsEndpoint ? byTag : [olderOnly])
+    },
+    notesEndpointFor: version => `https://api.github.test/repos/o/r/releases/tags/v${version}`,
+  })
+  assert.equal(found?.status, 'up-to-date')
+  assert.deepEqual(urls, [RELEASE_INDEX_ENDPOINT, tagsEndpoint])
+  assert.equal(summarizeReleaseNotes(found?.notes, 'zh-CN').summary, '按 tag 取到的摘要。')
+
+  // 这一次请求的任何失败都只是没有正文：检查更新的结论已经有了。
+  const failures = [
+    async () => new Response('nope', { status: 404 }),
+    async () => { throw new Error('offline') },
+    async () => new Response('{not json', { status: 200 }),
+    async () => Response.json({ tag_name: 'v9.9.9', draft: false, prerelease: false, body: '别人的说明。' }),
+    async () => Response.json({ tag_name: 'v0.7.4', draft: false, prerelease: true }),
+  ]
+  for (const onTag of failures) {
+    const result = await checkForStableUpdate({
+      currentVersion: '0.7.4',
+      request: async (url) => url === tagsEndpoint ? onTag() : Response.json([olderOnly]),
+      notesEndpointFor: () => tagsEndpoint,
+    })
+    assert.equal(result?.status, 'up-to-date')
+    assert.equal(result?.currentVersion, '0.7.4')
+    assert.equal(result?.notes, '')
+  }
+
+  // 认不出发布地址形状时不多发请求，也不编一个地址出来。
+  const withoutResolver = []
+  const plain = await checkForStableUpdate({
+    currentVersion: '0.7.4',
+    request: async (url) => { withoutResolver.push(url); return Response.json([olderOnly]) },
+  })
+  assert.equal(plain?.notes, '')
+  assert.equal(withoutResolver.length, 1)
+})
+
+test('196 releaseNotesEndpoint and releaseTagPageURL only rewrite the shapes they recognise', () => {
+  assert.equal(releaseNotesEndpoint('https://api.github.com/repos/o/r/releases/latest', '1.2.3'),
+    'https://api.github.com/repos/o/r/releases/tags/v1.2.3')
+  assert.equal(releaseNotesEndpoint('https://api.github.com/repos/o/r/releases/latest/', '1.2.3'),
+    'https://api.github.com/repos/o/r/releases/tags/v1.2.3')
+  for (const endpoint of ['http://api.github.com/repos/o/r/releases/latest', 'https://example.test/releases.json', '', 42, undefined]) {
+    assert.equal(releaseNotesEndpoint(endpoint, '1.2.3'), null)
+  }
+  for (const version of ['1.2.3-rc.1', 'v1.2.3', '1.2', '', undefined]) {
+    assert.equal(releaseNotesEndpoint('https://api.github.com/repos/o/r/releases/latest', version), null)
+  }
+  assert.equal(releaseTagPageURL('https://github.com/o/r/releases/latest', '1.2.3'),
+    'https://github.com/o/r/releases/tag/v1.2.3')
+  // 认不出的地址原样返回：按钮宁可打开发布列表，也不要拼出一个 404。
+  for (const page of ['https://github.com/o/r/releases', 'https://example.test/download']) {
+    assert.equal(releaseTagPageURL(page, '1.2.3'), page)
+  }
+  assert.equal(releaseTagPageURL('https://github.com/o/r/releases/latest', '1.2.3-rc.1'),
+    'https://github.com/o/r/releases/latest')
+})
+
 }
 
 // Plugin assertions; CSV maps observable cases to these test names.
@@ -3234,6 +3532,8 @@ test('checks the public TokensHarness release index by default', async () => {
     currentVersion: '0.1.0',
     latestVersion: '0.2.0',
     assets: [],
+    // 这份索引里的条目都没有 body，所以没有可显示的发布说明。
+    notes: '',
   })
   assert.equal(calls.length, 1)
   assert.equal(calls[0].url, RELEASE_INDEX_ENDPOINT)
@@ -3346,7 +3646,7 @@ test('package metadata and actual tarball include the complete runtime without l
     assert.equal(execution.status, 0, execution.stderr)
     const [packed] = JSON.parse(execution.stdout)
     const files = packed.files.map(file => file.path)
-    for (const required of ['index.js', 'download.js', 'identity.js', 'messages.js', 'index.d.ts', 'dist/client.js', 'cordis.patch.yml', 'package.json', 'LICENSE']) {
+    for (const required of ['index.js', 'download.js', 'identity.js', 'messages.js', 'release-notes.js', 'index.d.ts', 'dist/client.js', 'cordis.patch.yml', 'package.json', 'LICENSE']) {
       assert.ok(files.includes(required), `missing packaged runtime file: ${required}`)
     }
     assert.equal(files.some(file => /^(?:test|src|node_modules|\.github)\/|\.partial$|\.env/u.test(file)), false)
@@ -3357,7 +3657,7 @@ test('package metadata and actual tarball include the complete runtime without l
       entry.on('data', chunk => chunks.push(chunk))
       entry.on('end', () => contents.set(entry.path, Buffer.concat(chunks).toString('utf8')))
     } })
-    for (const required of ['index.js', 'download.js', 'messages.js', 'dist/client.js']) {
+    for (const required of ['index.js', 'download.js', 'messages.js', 'release-notes.js', 'dist/client.js']) {
       assert.equal(contents.get(`package/${required}`), await readFile(new URL(required, root), 'utf8'))
     }
   } finally { await rm(directory, { recursive: true, force: true }) }
@@ -3514,7 +3814,7 @@ test('tarball rejects missing runtime files and unexpected private files', async
   const root = await mkdtemp(join(tmpdir(), 'release-tar-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, 'package'));
-  const files = ['package.json', 'index.js', 'identity.js', 'download.js', 'messages.js',
+  const files = ['package.json', 'index.js', 'identity.js', 'download.js', 'messages.js', 'release-notes.js',
     'index.d.ts', 'dist/client.js', 'cordis.patch.yml', 'README.md', 'LICENSE'];
   for (const file of files) {
     await mkdir(join(root, 'package', file, '..'), { recursive: true });

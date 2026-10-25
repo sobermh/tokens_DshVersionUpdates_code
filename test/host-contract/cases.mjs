@@ -335,14 +335,28 @@ export async function registerHostContractCases() {
 
   host0('HOST-010', 'the adapter confirmation and result dialogs carry the real result shape',
     supported, async () => {
-      // Up to date: the plugin reports through showManualCheckResult.
-      await live({ native: { respond: () => jsonResponse([releaseDocument('0.1.0')]) } },
+      // Up to date: the plugin reports through showManualCheckResult. The
+      // installed version sits in the document the way the product publishes
+      // it — marked a GitHub prerelease — so its release notes ride along.
+      const notes = ['# TokensCowork v0.7.3', '', '这一版修了检查更新。', '',
+        '## 本次更新', '', '### 🐛 问题修复', '', '- 修好了那个按钮。', ''].join('\n')
+      await live({
+        native: {
+          respond: () => jsonResponse([
+            { ...releaseDocument('0.7.3'), prerelease: true, body: notes },
+            releaseDocument('0.1.0'),
+          ]),
+        },
+      },
         async (host) => {
           await host.tray().invoke()
           await until('the manual result', () => host.nativeCalls.manualResults.length > 0)
           const result = host.nativeCalls.manualResults[0]
           assert.equal(result.status, 'up-to-date')
           assert.equal(result.currentVersion, '0.7.3')
+          // The result crosses the real Host bridge. The dialog has nothing to
+          // show unless the notes text survives that serialisation intact.
+          assert.equal(result.notes, notes)
         })
       // Update available: the plugin asks the adapter to confirm the download.
       await live({ native: { respond: () => jsonResponse([newerRelease()]) } }, async (host) => {

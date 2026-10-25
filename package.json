@@ -1,6 +1,6 @@
 {
   "name": "@tokens/dsh-version-updates",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publishConfig": {
     "registry": "https://npm.tokensapi.ai/"
   },
@@ -43,6 +43,7 @@
     "download.js",
     "identity.js",
     "messages.js",
+    "release-notes.js",
     "index.d.ts",
     "dist/client.js",
     "cordis.patch.yml",

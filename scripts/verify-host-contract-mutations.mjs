@@ -31,7 +31,7 @@ const runner = path.join(repositoryRoot, 'test', 'run-test-cases.mjs')
 
 /** Files a mutated copy needs: everything the plugin publishes, plus the manifest. */
 const COPIED = [
-  'index.js', 'download.js', 'identity.js', 'messages.js', 'index.d.ts',
+  'index.js', 'download.js', 'identity.js', 'messages.js', 'release-notes.js', 'index.d.ts',
   'cordis.patch.yml', 'package.json', 'dist',
 ]
 
@@ -124,6 +124,13 @@ const MUTATIONS = [
       '      if (electron === null) return adapter.showManualCheckResult(result)',
       '      if (electron === null) return undefined']],
     expect: ['HOST-010', 'HOST-020'],
+  },
+  {
+    id: 'drop-release-notes',
+    note: 'the check result stops carrying the notes of the version the dialog names,'
+      + ' so "what changed" would silently disappear from the dialog',
+    edits: [['index.js', '    assets: parsed.assets,\n    notes,', "    assets: parsed.assets,\n    notes: '',"]],
+    expect: ['HOST-010'],
   },
   {
     id: 'route-path',

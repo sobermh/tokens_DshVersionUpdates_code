@@ -15,6 +15,8 @@ export interface UpdateCheckResult {
   readonly currentVersion: string
   readonly latestVersion: string
   readonly assets: readonly ReleaseAsset[]
+  /** Raw Release body of the version the dialogs will name; empty when none was available. */
+  readonly notes: string
 }
 
 /** Strictly parsed Semantic Versioning components. */
@@ -150,17 +152,53 @@ export function checkForStableUpdate(options: {
   endpoint?: string
   fallbackEndpoint?: string
   userAgent?: string
+  /** Resolves one version's own Release endpoint, used only when the document lacks it. */
+  notesEndpointFor?: (version: string) => string | null | undefined
 }): Promise<UpdateCheckResult | null>
-export interface ManualCheckDialog {
+/** One native dialog, ready to pass to Electron's showMessageBox. */
+export interface UpdateDialog {
   readonly type: 'info' | 'warning'
   readonly title: string
   readonly message: string
   readonly detail: string
+  readonly buttons: readonly string[]
+  readonly defaultId: number
+  readonly cancelId: number
+  readonly noLink: true
+  /** Index of the button opening the full release notes, or -1 when there are none. */
+  readonly notesButtonId: number
+  /** Release page that button opens; empty when there is no such button. */
+  readonly notesURL: string
 }
 export function describeManualCheck(
   result: UpdateCheckResult | null,
   options: { productName: string, releasesPageURL: string, locale?: string },
-): ManualCheckDialog
+): UpdateDialog
+export function describeDownloadPrompt(
+  version: string,
+  releaseNotes: unknown,
+  options: { productName: string, releasesPageURL: string, locale?: string },
+): UpdateDialog
+export function releaseTagPageURL(releasesPageURL: string, version: string): string
+export function releaseNotesEndpoint(endpoint: string, version: string): string | null
+export function presentUpdateDialog(
+  spec: UpdateDialog,
+  native: {
+    showMessageBox: (options: Record<string, unknown>) => Promise<{ response: number }>
+    openExternal?: (url: string) => Promise<unknown>
+  },
+): Promise<number>
+
+/** Plain-text summary and highlights extracted from one Release body. */
+export interface ReleaseNotesSummary {
+  readonly summary: string
+  readonly highlights: readonly string[]
+}
+export const MAX_RELEASE_HIGHLIGHTS: number
+export const MAX_RELEASE_NOTES_CHARACTERS: number
+export function selectReleaseNotesLanguage(body: unknown, locale?: string): string
+export function summarizeReleaseNotes(body: unknown, locale?: string): ReleaseNotesSummary
+export function renderReleaseNotes(body: unknown, locale?: string): string
 
 /** Resolve the application data directory holding one product's own state, or null when the name cannot be a directory. */
 export function productDataDirectory(

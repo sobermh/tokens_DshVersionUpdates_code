@@ -18,7 +18,7 @@ export async function verifyTarball(filename, expected) {
     });
   } });
   assert.deepEqual(invalid, [], 'No links or duplicate entries allowed');
-  const allowed = ['package.json', 'index.js', 'identity.js', 'download.js', 'messages.js',
+  const allowed = ['package.json', 'index.js', 'identity.js', 'download.js', 'messages.js', 'release-notes.js',
     'index.d.ts', 'dist/client.js', 'cordis.patch.yml', 'README.md', 'LICENSE'];
   assert.deepEqual([...contents.keys()].sort(), allowed.map(name => `package/${name}`).sort(),
     'Tarball must contain exactly the runtime files and public documentation');
