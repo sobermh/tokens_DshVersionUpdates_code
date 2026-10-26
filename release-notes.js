@@ -142,13 +142,96 @@ function inlineText(value) {
     .trim()
 }
 
-/** 超长就截断并补省略号；拉丁文本尽量断在词边界，中文按字数硬断。 */
+/**
+ * 超长就缩短：先只留放得下的整句，一句都放不下才退到标点或词边界并补省略号。
+ * 结果要么是完整的一句（以句末标点收尾），要么明显是省略的一段（以 `…` 收尾），
+ * 不会像按字数硬断那样停在半句上——中文一条要点常是「问题 + 修法」两句，硬断
+ * 出来的「……只能手动退出再打开。现…」看着像是坏了。
+ */
 function clamp(value, limit) {
   if (value.length <= limit) return value
+  let kept = ''
+  for (const sentence of sentences(value)) {
+    if ((kept + sentence).trimEnd().length > limit) break
+    kept += sentence
+  }
+  kept = kept.trimEnd()
+  if (kept !== '') return kept
+  return `${elide(value, limit)}…`
+}
+
+/** 句末标点：中文的 `。！？` 无歧义，英文的 `.!?` 另按 latinSentenceEnd 判。 */
+const SENTENCE_TERMINATORS = '。！？.!?'
+
+/** 紧跟句末标点、仍属于这一句的收尾符号。 */
+const SENTENCE_CLOSERS = '"\'“”‘’』」）)］]》'
+
+/** 退让用的子句标点：截不出整句时在这里断。 */
+const CLAUSE_PUNCTUATION = '，、；：,;:'
+
+/** 这些词后面的句点是缩写，不是句末。 */
+const LATIN_ABBREVIATIONS = new Set(['etc', 'vs', 'al', 'cf', 'inc', 'ltd', 'mr', 'mrs', 'ms', 'dr', 'prof', 'fig'])
+
+/**
+ * Split text into sentences, keeping every character so the pieces rejoin exactly.
+ * @param {string} value Plain text with whitespace already collapsed.
+ * @returns {string[]} Sentences in order; the separating space leads the next one.
+ */
+function sentences(value) {
+  const parts = []
+  let start = 0
+  for (let index = 0; index < value.length; index += 1) {
+    if (!SENTENCE_TERMINATORS.includes(value[index])) continue
+    let end = index
+    while (end < value.length && SENTENCE_TERMINATORS.includes(value[end])) end += 1
+    const run = value.slice(index, end)
+    while (end < value.length && SENTENCE_CLOSERS.includes(value[end])) end += 1
+    // 纯 ASCII 的句点要排除版本号、小数和缩写；只要混了中文标点就是句末。
+    if (!/[。！？]/u.test(run) && !latinSentenceEnd(value, index, end)) {
+      index = end - 1
+      continue
+    }
+    parts.push(value.slice(start, end))
+    start = end
+    index = end - 1
+  }
+  if (start < value.length) parts.push(value.slice(start))
+  return parts
+}
+
+/**
+ * Decide whether an ASCII `.`/`!`/`?` run really closes a sentence.
+ * @param {string} value Whole text.
+ * @param {number} index Index of the first terminator.
+ * @param {number} end Index just past the terminators and their closers.
+ * @returns {boolean} False for version numbers, decimals, initials and abbreviations.
+ */
+function latinSentenceEnd(value, index, end) {
+  // `0.7.5`、`v1.2` 里的点后面接着正文；句末后面是空白或到头。
+  if (end < value.length && value[end] !== ' ') return false
+  let start = index
+  while (start > 0 && /[A-Za-z0-9]/u.test(value[start - 1])) start -= 1
+  const word = value.slice(start, index)
+  // `e.g.`、`i.e.` 与姓名缩写：句点前只有一个字母。
+  if (/^[A-Za-z]$/u.test(word)) return false
+  return !LATIN_ABBREVIATIONS.has(word.toLowerCase())
+}
+
+/**
+ * 整句都放不下时的兜底：先退到子句标点，再退到词边界，都太靠前才硬断。
+ * 子句标点优先于词边界——断在子句上像是有意省略，断在半个子句里像是坏了。
+ * 两者都要落在后 40% 以内，否则宁可按字数硬断，不为了标点丢掉大半内容。
+ */
+function elide(value, limit) {
   const cut = value.slice(0, limit)
-  const boundary = cut.lastIndexOf(' ')
-  const kept = boundary > limit * 0.6 ? cut.slice(0, boundary) : cut
-  return `${kept.replace(/[\s,;:.!?，、；：。！？-]+$/u, '')}…`
+  const floor = limit * 0.6
+  let boundary = -1
+  for (let index = cut.length - 1; index > floor; index -= 1) {
+    if (CLAUSE_PUNCTUATION.includes(cut[index])) { boundary = index; break }
+  }
+  if (boundary < 0) boundary = cut.lastIndexOf(' ')
+  const kept = boundary > floor ? cut.slice(0, boundary) : cut
+  return kept.replace(/[\s,;:.!?，、；：。！？-]+$/u, '')
 }
 
 function escapeForRegExp(value) {

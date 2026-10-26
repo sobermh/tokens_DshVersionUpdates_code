@@ -3225,6 +3225,13 @@ test('170 Desktop update route rejects untrusted and non-empty requests', async 
  */
 const realReleaseNotes = await readFile(new URL('fixtures/release-notes-v0.7.4.md', import.meta.url), 'utf8')
 
+/**
+ * TokensCowork v0.7.5 的 Release 正文（`test/fixtures/release-notes-v0.7.5.md`）。
+ * 它只有一条问题修复要点，而那条正是真机上被按字数硬截成
+ * 「……只能手动退出再打开。现…」的那一条，所以句子边界的用例喂的是它。
+ */
+const realReleaseNotesV075 = await readFile(new URL('fixtures/release-notes-v0.7.5.md', import.meta.url), 'utf8')
+
 /** 一份最小的双语正文，用来单独验某一段结构缺失时的行为。 */
 function notesDocument({ title = '# P v1.2.3', summary = '这一版修了点东西。', zhUpdates = '- 修好了那个按钮。', enUpdates = '- Fixed that button.' } = {}) {
   return [title, '', summary, '', '## 本次更新', '', '### 🐛 问题修复', '', zhUpdates, '',
@@ -3490,6 +3497,67 @@ test('196 releaseNotesEndpoint and releaseTagPageURL only rewrite the shapes the
   }
   assert.equal(releaseTagPageURL('https://github.com/o/r/releases/latest', '1.2.3-rc.1'),
     'https://github.com/o/r/releases/latest')
+})
+
+test('197 the real notes are shortened at sentence or clause boundaries, never in mid-sentence', () => {
+  // 真机上这条要点被按 90 字硬截成「……只能手动退出再打开。现…」，用户问"为什么有『现…』"。
+  const { summary, highlights } = summarizeReleaseNotes(realReleaseNotesV075, 'zh-CN')
+  assert.equal(highlights.length, 2)
+  assert.ok(highlights[0].endsWith('只能手动退出再打开。'), highlights[0])
+  assert.ok(highlights[0].length <= MAX_RELEASE_HIGHLIGHT_CHARACTERS, String(highlights[0].length))
+  // 放不下的第二句整句不要，不留半句，也不在整句之后再补省略号。
+  assert.equal(highlights[0].includes('现'), false, highlights[0])
+  assert.equal(highlights[0].endsWith('…'), false, highlights[0])
+  assert.ok(summary.endsWith('内核版本与内置插件与 v0.7.4 相同。'), summary)
+
+  // 首句本身就放不下时退到子句标点：v0.7.4 这条首句 94 字，断在最后一个「，」上。
+  const [first] = summarizeReleaseNotes(realReleaseNotes, 'zh-CN').highlights
+  assert.ok(first.endsWith('在日志里看不到…'), first)
+  // 英文半边同样先找子句边界（这里是冒号），而不是切在词中间。
+  assert.ok(summarizeReleaseNotes(realReleaseNotesV075, 'en-US').highlights[0]
+    .endsWith('"restart required" banner…'), summarizeReleaseNotes(realReleaseNotesV075, 'en-US').highlights[0])
+
+  // 两份真实正文、四种语言：每条要点与摘要要么整句收尾，要么明显是省略的一段。
+  for (const body of [realReleaseNotes, realReleaseNotesV075]) {
+    for (const locale of ['zh-CN', 'zh-TW', 'en-US', 'fr-FR']) {
+      const rendered = summarizeReleaseNotes(body, locale)
+      for (const text of [...rendered.highlights, rendered.summary].filter(Boolean)) {
+        assert.match(text, /[。！？.!?…]["'“”’」』）)]?$/u)
+      }
+    }
+  }
+})
+
+test('198 shortening prefers whole sentences, then clauses, and never splits a version number', () => {
+  const limit = MAX_RELEASE_HIGHLIGHT_CHARACTERS
+  const highlight = text => summarizeReleaseNotes(notesDocument({ zhUpdates: '- ' + text }), 'zh-CN').highlights[0]
+  const english = text => summarizeReleaseNotes(notesDocument({ enUpdates: '- ' + text }), 'en-US').highlights[0]
+
+  // 放得下就原样，放不下的整句一句都不留半截。
+  assert.equal(highlight('修好了那个按钮。'), '修好了那个按钮。')
+  assert.equal(highlight('第一句。' + '乙'.repeat(100) + '。'), '第一句。')
+  // 首句超长：退到最后一个落在后 40% 以内的子句标点。
+  assert.equal(highlight('甲'.repeat(50) + '，' + '乙'.repeat(30) + '，' + '丙'.repeat(40) + '。'),
+    '甲'.repeat(50) + '，' + '乙'.repeat(30) + '…')
+  // 一个标点都没有才按字数硬断，长度仍不超过上限加省略号。
+  const hard = highlight('甲'.repeat(200))
+  assert.equal(hard, '甲'.repeat(limit) + '…')
+  assert.equal(hard.length, limit + 1)
+
+  // 版本号与小数里的点不是句末，否则首句会变成"The build is 0."。
+  const versions = 'The build is 0.7.5 and it stays 0.7.5 for the whole of this maintenance release.'
+  assert.equal(english(versions + ' Nothing else in it changed at all.'), versions)
+  // 缩写后面的点也不是句末，这条要退到"release page"后的逗号而不是停在"e.g."。
+  assert.equal(english('Install it with the bundled tool, e.g. the signed installer from the release page,'
+    + ' before you open the app for the first time.'),
+    'Install it with the bundled tool, e.g. the signed installer from the release page…')
+
+  // 摘要段同样按句子收：两句放得下、第三句放不下就不要。
+  const paragraph = sentence => sentence.repeat(80) + '。'
+  const notes = notesDocument({ summary: paragraph('甲') + paragraph('乙') + paragraph('丙') })
+  const { summary } = summarizeReleaseNotes(notes, 'zh-CN')
+  assert.equal(summary, paragraph('甲') + paragraph('乙'))
+  assert.ok(summary.length <= MAX_RELEASE_SUMMARY_CHARACTERS, String(summary.length))
 })
 
 }
