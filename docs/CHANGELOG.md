@@ -1,5 +1,27 @@
 # 变更记录
 
+## [0.1.7] - 2026-10-26
+
+弹窗里的英文要点不再被砍得只剩主语。
+
+- 摘要与单条要点的额度改按**显示宽度**计：东亚宽字符（CJK 统一表意文字、全角标点、
+  假名、谚文等）记 2 列，其余记 1 列；要点 180 列、摘要 400 列。导出的常量随之改名
+  `MAX_RELEASE_HIGHLIGHT_COLUMNS` / `MAX_RELEASE_SUMMARY_COLUMNS`，并导出
+  `displayWidth(value)`。
+- 这修的是真机英文弹窗：第一条要点原句 410 个字符，按字符个数算只显示到
+  「The "Restart now" button on the plugin market's "restart required" banner…」，
+  看不出任何实质内容；同一份正文的中文那条 95 个字完整显示。根因是一个汉字的显示
+  宽度与信息量都约等于两个英文字符，于是同一个「90 个字符」的额度，中文够一整句、
+  英文只够一个主语。现在英文那条看得到问题本身，第二条 170 个字符整句显示。
+- 中文输出不退：180 列正好是原来的 90 个汉字，v0.7.5 的中文结果与 0.1.6 逐字相同；
+  v0.7.4 里混了版本号与标识符（`code`、`INTERNAL_UNKNOWN`、版本号）的几条按列算
+  本来就占得少，从原来的截断处继续往下显示，不会换个地方截。
+- 新增常驻用例 `NOTES-09` 与夹具 `test/fixtures/release-notes-0.1.6-output.json`
+  （0.1.6 对两份真实正文的输出，用来逐条比对中文那半边）。变异验证两条：宽字符权重
+  改回 1 让 v0.7.5 的中文逐字断言变红（那条要点会溢出成 232 列），要点额度改回 90
+  让英文的实质内容断言变红。
+- 句子／子句边界的判定、取正文的来源与容错逻辑、弹窗文案与按钮都没有动。
+
 ## [0.1.6] - 2026-10-26
 
 弹窗里的要点不再被截在句子中间。
@@ -121,3 +143,4 @@
 [0.1.4]: https://github.com/sobermh/tokens_DshVersionUpdates_code/compare/v0.1.3...v0.1.4
 [0.1.5]: https://github.com/sobermh/tokens_DshVersionUpdates_code/compare/v0.1.4...v0.1.5
 [0.1.6]: https://github.com/sobermh/tokens_DshVersionUpdates_code/compare/v0.1.5...v0.1.6
+[0.1.7]: https://github.com/sobermh/tokens_DshVersionUpdates_code/compare/v0.1.6...v0.1.7

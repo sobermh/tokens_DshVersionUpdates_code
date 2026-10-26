@@ -16,9 +16,16 @@ import { isChineseLocale } from './messages.js'
 /** 弹窗里最多列出的要点条数。 */
 export const MAX_RELEASE_HIGHLIGHTS = 6
 
-/** 摘要与单条要点的字符上限：原生对话框一行约 40 个中文字符，要点各占一行。 */
-export const MAX_RELEASE_SUMMARY_CHARACTERS = 200
-export const MAX_RELEASE_HIGHLIGHT_CHARACTERS = 90
+/**
+ * 摘要与单条要点的上限，按**显示宽度**计（列数，见 displayWidth）：原生对话框
+ * 一行约 80 列（≈40 个中文字符），一条要点占两行出头。
+ *
+ * 不按字符个数计，是因为一个汉字的显示宽度与信息量都约等于两个英文字符：同一个
+ * 「90 个字符」的额度，中文装得下一整句，英文只够一个主语——真机英文弹窗里
+ * 410 个字符的那条要点只显示到 73 个字符，看不出任何实质内容。
+ */
+export const MAX_RELEASE_SUMMARY_COLUMNS = 400
+export const MAX_RELEASE_HIGHLIGHT_COLUMNS = 180
 
 /** 英文半边的分界标题，也是「这份正文是双语的」的判据。 */
 const ENGLISH_BOUNDARY = /^##[ \t]+What's New[ \t]*$/mu
@@ -59,7 +66,7 @@ export function summarizeReleaseNotes(body, locale) {
   const section = selectReleaseNotesLanguage(body, locale)
   if (section === '') return { summary: '', highlights: [] }
   return {
-    summary: clamp(summaryParagraph(section), MAX_RELEASE_SUMMARY_CHARACTERS),
+    summary: clamp(summaryParagraph(section), MAX_RELEASE_SUMMARY_COLUMNS),
     highlights: highlights(updatesSection(section, locale)),
   }
 }
@@ -120,7 +127,7 @@ function highlights(updates) {
     // 只认顶格的一级要点：缩进的子项、表格行、组件清单都不是要点。
     const match = /^[-*+][ \t]+(\S.*)$/u.exec(line)
     if (match === null) continue
-    const text = clamp(inlineText(match[1]), MAX_RELEASE_HIGHLIGHT_CHARACTERS)
+    const text = clamp(inlineText(match[1]), MAX_RELEASE_HIGHLIGHT_COLUMNS)
     if (text === '') continue
     items.push(text)
     if (items.length >= MAX_RELEASE_HIGHLIGHTS) break
@@ -143,16 +150,76 @@ function inlineText(value) {
 }
 
 /**
+ * 东亚宽字符与全角字符的码位区间：这些字符在等宽显示里占两列，其余占一列。
+ * 按 UAX #11 的 Wide 与 Fullwidth 两类取，外加弹窗里同样占两列的表情符号。
+ */
+const WIDE_CODE_POINT_RANGES = [
+  [0x1100, 0x115f], // 韩文字母
+  [0x2e80, 0x303e], // CJK 部首补充、康熙部首、中日韩符号与标点（含全角句号与顿号）
+  [0x3041, 0x33ff], // 假名、注音、韩文兼容字母、带圈与方块字符
+  [0x3400, 0x4dbf], // CJK 扩展 A
+  [0x4e00, 0x9fff], // CJK 统一表意文字
+  [0xa000, 0xa4cf], // 彝文音节
+  [0xa960, 0xa97f], // 韩文字母扩展 A
+  [0xac00, 0xd7a3], // 韩文音节
+  [0xf900, 0xfaff], // CJK 兼容表意文字
+  [0xfe10, 0xfe19], // 竖排标点
+  [0xfe30, 0xfe6f], // CJK 兼容形式、小写变体、全角标点变体
+  [0xff00, 0xff60], // 全角 ASCII 与全角标点
+  [0xffe0, 0xffe6], // 全角货币与符号
+  [0x1f300, 0x1f64f], // 表情符号与象形文字
+  [0x1f900, 0x1f9ff], // 补充符号与象形文字
+  [0x20000, 0x3fffd], // CJK 扩展 B 及以后
+]
+
+/**
+ * Measure how many columns a string occupies in the dialog's monospaced text.
+ * @param {string} value Plain text.
+ * @returns {number} Columns: East Asian wide and fullwidth characters count 2, the rest 1.
+ */
+export function displayWidth(value) {
+  let columns = 0
+  for (const character of value) columns += isWide(character.codePointAt(0)) ? 2 : 1
+  return columns
+}
+
+/** 这个码位是不是占两列。 */
+function isWide(code) {
+  for (const [start, end] of WIDE_CODE_POINT_RANGES) if (code >= start && code <= end) return true
+  return false
+}
+
+/**
+ * Take the longest prefix fitting a column budget, never splitting a code point.
+ * @param {string} value Plain text.
+ * @param {number} limit Column budget.
+ * @returns {string} Prefix whose display width is at most the budget.
+ */
+function sliceToWidth(value, limit) {
+  let columns = 0
+  let end = 0
+  for (const character of value) {
+    const next = columns + (isWide(character.codePointAt(0)) ? 2 : 1)
+    if (next > limit) break
+    columns = next
+    end += character.length
+  }
+  return value.slice(0, end)
+}
+
+/**
  * 超长就缩短：先只留放得下的整句，一句都放不下才退到标点或词边界并补省略号。
  * 结果要么是完整的一句（以句末标点收尾），要么明显是省略的一段（以 `…` 收尾），
  * 不会像按字数硬断那样停在半句上——中文一条要点常是「问题 + 修法」两句，硬断
  * 出来的「……只能手动退出再打开。现…」看着像是坏了。
+ *
+ * 额度按显示宽度算，不按字符个数：弹窗能放多少取决于占多少列，而一个汉字占两列。
  */
 function clamp(value, limit) {
-  if (value.length <= limit) return value
+  if (displayWidth(value) <= limit) return value
   let kept = ''
   for (const sentence of sentences(value)) {
-    if ((kept + sentence).trimEnd().length > limit) break
+    if (displayWidth((kept + sentence).trimEnd()) > limit) break
     kept += sentence
   }
   kept = kept.trimEnd()
@@ -220,17 +287,21 @@ function latinSentenceEnd(value, index, end) {
 /**
  * 整句都放不下时的兜底：先退到子句标点，再退到词边界，都太靠前才硬断。
  * 子句标点优先于词边界——断在子句上像是有意省略，断在半个子句里像是坏了。
- * 两者都要落在后 40% 以内，否则宁可按字数硬断，不为了标点丢掉大半内容。
+ * 两者都要落在后 40% 以内（同样按列算），否则宁可硬断，不为了标点丢掉大半内容。
  */
 function elide(value, limit) {
-  const cut = value.slice(0, limit)
+  const cut = sliceToWidth(value, limit)
   const floor = limit * 0.6
   let boundary = -1
-  for (let index = cut.length - 1; index > floor; index -= 1) {
+  for (let index = cut.length - 1; index > 0; index -= 1) {
+    if (displayWidth(cut.slice(0, index)) <= floor) break
     if (CLAUSE_PUNCTUATION.includes(cut[index])) { boundary = index; break }
   }
-  if (boundary < 0) boundary = cut.lastIndexOf(' ')
-  const kept = boundary > floor ? cut.slice(0, boundary) : cut
+  if (boundary < 0) {
+    const space = cut.lastIndexOf(' ')
+    if (space > 0 && displayWidth(cut.slice(0, space)) > floor) boundary = space
+  }
+  const kept = boundary > 0 ? cut.slice(0, boundary) : cut
   return kept.replace(/[\s,;:.!?，、；：。！？-]+$/u, '')
 }
 
