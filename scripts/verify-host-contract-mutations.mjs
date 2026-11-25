@@ -216,6 +216,14 @@ const MUTATIONS = [
     expect: ['HOST-020'],
   },
   {
+    id: 'rollout-installation-id',
+    note: 'the rollout request stops carrying the installation id the bridge delivered',
+    edits: [['index.js',
+      "    'X-Installation-Id': options.installationId,",
+      "    'X-Installation-Id': 'mutated',"]],
+    expect: ['HOST-024'],
+  },
+  {
     id: 'client-slot-id',
     scope: 'client',
     note: 'the sidebar seat claims another list id',
@@ -279,7 +287,7 @@ async function runMutation(mutation) {
 
     const names = mutation.scope === 'client'
       ? `^(${CLIENT_CASES.join('|')}) `
-      : '^HOST-0(0[0-9]|1[0-9]|20) '
+      : '^HOST-0(0[0-9]|1[0-9]|20|24) '
     const child = spawn(process.execPath, [
       '--test-concurrency=1', `--test-name-pattern=${names}`, runner, '--case-worker=host-contract',
     ], {

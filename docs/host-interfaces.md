@@ -1,7 +1,7 @@
 # 宿主接口与真实宿主契约用例
 
 本插件用到的**每一个** DSH 宿主接口，各有一条对真实 staged 宿主的常驻用例。
-命令是 `npm run check:host`，用例编号 `HOST-001`…`HOST-023`，清单在
+命令是 `npm run check:host`，用例编号 `HOST-001`…`HOST-024`，清单在
 [`test/test_cases.csv`](../test/test_cases.csv)，实现在 [`test/host-contract/`](../test/host-contract/)。
 
 ## 怎么跑
@@ -20,7 +20,7 @@ DSH_HOST_ROOT=… node scripts/verify-host-contract-mutations.mjs
 `check:host` 内部把 `DSH_HOST_ROOT` 映射到本仓库原有的 `TOKENS_HOST_ROOT`
 （契约夹具）、`TOKENS_HARNESS_ROOT` 与 `DSH_RUNTIME_ROOT`（既有用例），门禁不需要知道这些名字。
 
-**fail closed**：没有 `DSH_HOST_ROOT` 时 23 条全部报 `NOT EXECUTED` 且退出码为 1。
+**fail closed**：没有 `DSH_HOST_ROOT` 时 24 条全部报 `NOT EXECUTED` 且退出码为 1。
 只有两类未执行理由会被接受并单列——`host-generation:`（本代宿主没有这个接口）和
 `platform:`（本平台不发布该产物）；其余一律判失败，用例不可能悄悄停跑。
 `npm test` 会把未执行的用例单独列出、不计入通过，但不因缺宿主而变红。
@@ -31,7 +31,7 @@ DSH_HOST_ROOT=… node scripts/verify-host-contract-mutations.mjs
 |---|---|
 | `test/host-contract/live-host.mjs` | 用宿主自带 launcher 起一次性 profile；真实 webServer / credentials / connection；经真实 `host-runtime-bridge.ts` 投影 `desktopRuntime`；夹具家目录围栏 |
 | `test/host-contract/client-runtime.mjs` | 浏览器半边：宿主的 `__ModuleLoader__` 协议、真实 `SlotRegistry`、真实浏览器 Connection |
-| `test/host-contract/cases.mjs` | `HOST-001`…`HOST-023` 的断言 |
+| `test/host-contract/cases.mjs` | `HOST-001`…`HOST-024` 的断言 |
 | `test/host-contract/host-modules.mjs` | 只读 resolve hook，把 `@deepseek-ai/*` 指向 staged 宿主 |
 | `scripts/check-host-contracts.mjs` | `npm run check:host`：变量映射、多宿主、未执行理由的准入判定 |
 | `scripts/test-report-summary.mjs` | 读子进程的测试报告：`tap` 与 `spec` 两种格式都认，并与报告器自己的计数对账 |
@@ -112,6 +112,7 @@ NODE_OPTIONS=--test-reporter=tap DSH_HOST_ROOT=… npm run check:host
 | 宿主 `__ModuleLoader__` 协议 + 真实 `SlotRegistry` 的 `sidebar.footer.action` 坐席 | `src/client/index.tsx:144`，`dist/client.js` | HOST-021 |
 | 渲染时才解析的名字：primitives 导出、sidebar 插槽声明、`dsh.client.inject` | `src/client/index.tsx:5`，`package.json` | HOST-022 |
 | 坐席 `inject()` 面经真实浏览器 Connection 打到活宿主 | `src/client/index.tsx:137-152` | HOST-023 |
+| `desktopRuntime.updates.installationId` 快照字段，及灰度请求的自定义头（`X-Installation-Id`）经桥上 `request` 原样到达；灰度回答指定的预发布版被采用 | `index.js` `requestRolloutVersion` / `askRollout` | HOST-024 |
 
 ## 本地环境注意
 
@@ -153,9 +154,9 @@ NODE_OPTIONS=--test-reporter=tap DSH_HOST_ROOT=… npm run check:host
 
 | 宿主 | DSH | 结果 |
 |---|---|---|
-| `.build/desktop`（2.0.18 / 0.7.x） | 0.2.1-rc.2 | 23/23 |
-| `.build/desktop-v060`（2.0.17 / 0.6.x） | 0.2.0-rc.2 | 23/23 |
-| `.build/desktop-v0525`（2.0.9 / 0.5.x） | 0.1.5-rc.2 | 19/23，4 条 `host-generation` 未执行 |
+| `.build/desktop`（2.0.18 / 0.7.x） | 0.2.1-rc.2 | 24/24 |
+| `.build/desktop-v060`（2.0.17 / 0.6.x） | 0.2.0-rc.2 | 24/24 |
+| `.build/desktop-v0525`（2.0.9 / 0.5.x） | 0.1.5-rc.2 | 20/24，4 条 `host-generation` 未执行 |
 
 0.1.5-rc.2 上未执行的四条，以及**为什么它们不该执行**：
 
@@ -165,6 +166,6 @@ NODE_OPTIONS=--test-reporter=tap DSH_HOST_ROOT=… npm run check:host
   （slot core 没有 Factory 注册，primitives 还叫 `IconDownloadOutline16`）。
   本插件的客户端半边是对着 DSH 0.2 渲染层写的；0.5.x 产品线钉的是旧版本的本插件。
 
-**顺带结论**：本插件的**宿主半边**在 0.1.5-rc.2 上 19 条全绿，也就是说运行时那半边
+**顺带结论**：本插件的**宿主半边**在 0.1.5-rc.2 上 20 条全绿，也就是说运行时那半边
 实际上仍然兼容 DSH 0.1；声明的 peer 下界 `>=0.2.0-rc.2` 是由客户端半边决定的。
 这是现状记录，不是改下界的理由——0.5.x 线不升级本插件。

@@ -30,6 +30,8 @@ import {
   RELEASE_INDEX_ENDPOINT,
   RELEASE_INDEX_URL,
   REQUEST_TIMEOUT_MS,
+  ROLLOUT_TIMEOUT_MS,
+  ROLLOUT_URL,
   UPDATES_ENABLED,
 } from './identity.js'
 
@@ -72,7 +74,13 @@ const MAX_DIALOG_PRESENTATIONS = 4
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 const MAX_STATE_BYTES = 4 * 1024
 const MAX_DESKTOP_UPDATE_BODY_BYTES = 16 * 1024
-const EMPTY_STATE = { version: 2 }
+const STATE_VERSION = 3
+const EMPTY_STATE = { version: STATE_VERSION, promptedVersions: [] }
+/** Prompted versions kept in the state file, newest last; the oldest drop out first. */
+const MAX_PROMPTED_VERSIONS = 32
+/** Upper bound on resolving the optional TokensAPI key for one rollout request. */
+const CREDENTIAL_TIMEOUT_MS = 5_000
+const API_KEY_REF = 'TOKENSAPI_API_KEY'
 const UPDATE_RPC_CHANNEL = '/tokens-version-updates'
 export const DESKTOP_UPDATE_CHECK_PATH = '/api/desktop/updates/check'
 const SEMVER_PATTERN =
@@ -92,6 +100,7 @@ export const Config = Schema.object({
   githubRepo: Schema.string().default(GITHUB_REPO),
   releaseIndexURL: Schema.string(),
   releaseAPIURL: Schema.string(),
+  rolloutURL: Schema.string().default(ROLLOUT_URL),
 })
 
 /* ====================================================================
@@ -136,20 +145,98 @@ export function compareSemVerVersions(left, right) {
   return compareParsedSemVer(leftVersion, rightVersion)
 }
 
+/**
+ * Whether one update changes the first or second version number of the installed one.
+ * @param {string} currentVersion Installed version.
+ * @param {string} nextVersion Version on offer.
+ * @returns {boolean} True for a "big" update such as 0.7.x → 0.8.0; false otherwise or for invalid input.
+ */
+export function isMajorUpdate(currentVersion, nextVersion) {
+  const current = typeof currentVersion === 'string' ? parseSemVer(currentVersion) : null
+  const next = typeof nextVersion === 'string' ? parseSemVer(nextVersion) : null
+  if (current === null || next === null) return false
+  return compareNumeric(current.major, next.major) !== 0 || compareNumeric(current.minor, next.minor) !== 0
+}
+
 /* ====================================================================
- * 版本检查（导出）
- * 优先请求 Pages Release 索引并与当前版本比较，索引不可用时降级
- * GitHub latest Release API；所有来源都只接受正式稳定版本。
+ * 灰度接口（导出）
+ * 检查更新前先问市场服务端「这台安装该拿哪个版本」。服务端只回答版本号，
+ * 安装包与摘要仍取自 Release 索引。任何失败都返回 null，由调用方退回
+ * 版本源里最高的稳定版，所以服务端不可用时更新照常能用。
  * ==================================================================== */
 
 /**
- * Check the TokensHarness GitHub repository for a newer stable Release.
- * @param {{ currentVersion: string, signal?: AbortSignal, request?: import('./index.js').UpdateRequest, endpoint?: string, fallbackEndpoint?: string, userAgent?: string, notesEndpointFor?: (version: string) => string | null | undefined }} options Check inputs.
+ * Ask the rollout service which version this installation should be offered.
+ * @param {{ endpoint: string, currentVersion: string, installationId: unknown, apiKey?: string, manual?: boolean, platform?: string, arch?: string, signal?: AbortSignal, request?: import('./index.js').UpdateRequest, userAgent?: string }} options Request inputs.
+ * @returns {Promise<{ version: string | null } | null>} The service's answer, or null when the caller must fall back.
+ */
+export async function requestRolloutVersion(options) {
+  const current = parseCanonicalStableVersion(options.currentVersion)
+  if (current === null || !isInstallationId(options.installationId)) return null
+  let url
+  try {
+    url = new URL(options.endpoint)
+  } catch {
+    return null
+  }
+  if (url.protocol !== 'https:') return null
+  url.searchParams.set('version', current.version)
+  url.searchParams.set('platform', options.platform ?? process.platform)
+  url.searchParams.set('arch', options.arch ?? process.arch)
+  if (options.manual === true) url.searchParams.set('manual', '1')
+  const headers = {
+    Accept: 'application/json',
+    'User-Agent': options.userAgent ?? PRODUCT_NAME,
+    'X-Installation-Id': options.installationId,
+  }
+  const apiKey = typeof options.apiKey === 'string' ? options.apiKey.trim() : ''
+  if (apiKey !== '') headers.Authorization = `Bearer ${apiKey}`
+  const request = options.request ?? globalThis.fetch
+  try {
+    const response = await request(url.href, {
+      method: 'GET',
+      headers,
+      cache: 'no-store',
+      redirect: 'error',
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    })
+    if (response.status !== 200) return null
+    const value = JSON.parse(await readLimitedBody(response))
+    if (!isRecord(value) || !Object.hasOwn(value, 'version')) return null
+    if (value.version === null) return { version: null }
+    const offered = typeof value.version === 'string' ? parseCanonicalStableVersion(value.version) : null
+    if (offered === null) return null
+    // 服务端只给比已装版本高的版本；万一给了不高的也绝不降级，当作没有更新。
+    return { version: compareParsedSemVer(offered, current) > 0 ? offered.version : null }
+  } catch {
+    return null
+  }
+}
+
+/* ====================================================================
+ * 版本检查（导出）
+ * 优先请求 Pages Release 索引并与当前版本比较，索引不可用时降级
+ * GitHub latest Release API。没有灰度结论时只接受正式稳定版本；
+ * 灰度指定了版本时按 tag 找那一版（含预发布），找不到就是没有更新。
+ * ==================================================================== */
+
+/**
+ * Check the TokensHarness GitHub repository for a newer Release.
+ * @param {{ currentVersion: string, offeredVersion?: string | null, platform?: string, arch?: string, signal?: AbortSignal, request?: import('./index.js').UpdateRequest, endpoint?: string, fallbackEndpoint?: string, userAgent?: string, notesEndpointFor?: (version: string) => string | null | undefined }} options Check inputs.
  * @returns {Promise<import('./index.js').UpdateCheckResult | null>} Comparison or null on failure.
  */
 export async function checkForStableUpdate(options) {
   const current = parseCanonicalStableVersion(options.currentVersion)
   if (current === null) return null
+  // undefined：没有灰度结论，取最高稳定版；null：服务端说没有更新；字符串：只认这一版。
+  const offered = options.offeredVersion
+  if (offered !== undefined && offered !== null
+    && (typeof offered !== 'string' || parseCanonicalStableVersion(offered) === null)) return null
+  const target = {
+    offered,
+    platform: options.platform ?? process.platform,
+    arch: options.arch ?? process.arch,
+  }
 
   const init = {
     method: 'GET',
@@ -186,11 +273,17 @@ export async function checkForStableUpdate(options) {
       if (options.signal?.aborted === true) return null
       continue
     }
-    parsed = parseVersionResponse(body, current.version)
-    if (parsed !== null) break
+    const document = parseVersionResponse(body, current.version, target)
+    if (document === null) continue
+    // 灰度指定的版本不在这份文档里时（降级地址只返回 latest 一条）再看下一个地址；
+    // 每份都没有才算没有更新，这时仍用读到的文档给「已是最新」配上已装版本的说明。
+    if (parsed === null || document.latest !== null) parsed = document
+    if (parsed.latest !== null || offered === null) break
   }
   if (parsed === null) return null
-  const status = compareParsedSemVer(parsed.latest, current) > 0 ? 'update-available' : 'up-to-date'
+  const status = parsed.latest !== null && compareParsedSemVer(parsed.latest, current) > 0
+    ? 'update-available'
+    : 'up-to-date'
   // 已是最新时要显示的是已安装版本的说明，取它和「有没有更新」无关：产品把 0.7.x
   // 标成 GitHub 预发布，稳定版筛选会滤掉它，但它的正文就在同一份文档里，按 tag 直接
   // 取。只有文档里根本没有这一版时（降级地址只返回 latest 一条）才按 tag 再请求一次
@@ -203,7 +296,7 @@ export async function checkForStableUpdate(options) {
   return {
     status,
     currentVersion: current.version,
-    latestVersion: parsed.latest.version,
+    latestVersion: (parsed.latest ?? current).version,
     assets: parsed.assets,
     notes,
   }
@@ -455,6 +548,21 @@ export function apply(ctx, config) {
       : `https://api.github.com/repos/${githubOwner}/${githubRepo}/releases/latest`,
   )
   const releasesPageURL = `https://github.com/${githubOwner}/${githubRepo}/releases/latest`
+  const rolloutEndpoint = resolveRolloutURL(config.rolloutURL ?? ROLLOUT_URL)
+  // 可选的 credentials 服务：在就带上 TokensAPI Key，不在、没登录或答不上都不带。
+  let credentials
+  const resolveApiKey = async () => {
+    const service = credentials
+    if (service === undefined || typeof service?.resolve !== 'function') return ''
+    try {
+      return resolvedValue(await Promise.race([
+        service.resolve(API_KEY_REF),
+        after(CREDENTIAL_TIMEOUT_MS, ''),
+      ])).trim()
+    } catch {
+      return ''
+    }
+  }
   let readClientStatus = () => ({ phase: 'idle', productName })
   let requestClientDownload = async () => false
   ctx.effect(() => {
@@ -472,7 +580,6 @@ export function apply(ctx, config) {
     let inFlight
     let manualTask
     let downloadTask
-    let autoPromptedVersion
     let downloadedBytes = 0
     let downloadTotalBytes = 0
     let refreshTray = () => {}
@@ -518,13 +625,36 @@ export function apply(ctx, config) {
 
     const rememberPrompt = async (version) => {
       await stateReady
-      if (state.lastPromptedVersion === version) return
-      state = { version: 2, lastPromptedVersion: version }
+      if (state.promptedVersions.includes(version)) return
+      state = {
+        version: STATE_VERSION,
+        promptedVersions: [...state.promptedVersions, version].slice(-MAX_PROMPTED_VERSIONS),
+      }
       await persistState()
     }
 
     /* ----------------------- 单飞的版本检查 ----------------------- */
-    const startCheck = () => {
+    /** 灰度接口关闭或宿主没有安装标识时不请求，直接走旧逻辑。 */
+    const usesRollout = () => rolloutEndpoint !== '' && isInstallationId(adapter.installationId)
+
+    /** 灰度接口的结论；请求失败、超时或回答不合法时为 null，调用方退回旧逻辑。 */
+    const askRollout = async (signal, manual) => {
+      const apiKey = await resolveApiKey()
+      if (signal.aborted) return null
+      return await requestRolloutVersion({
+        endpoint: rolloutEndpoint,
+        currentVersion: adapter.currentVersion,
+        installationId: adapter.installationId,
+        apiKey,
+        manual,
+        signal: AbortSignal.any([signal, AbortSignal.timeout(ROLLOUT_TIMEOUT_MS)]),
+        request: adapter.request,
+        userAgent: productName,
+      })
+    }
+
+    /** 一次版本检查；`manual` 让灰度接口跳过放量比例（暂缓名单与暂停仍然生效）。 */
+    const startCheck = (mode = {}) => {
       if (inFlight !== undefined) return inFlight
       checking = true
       refreshTray()
@@ -532,10 +662,16 @@ export function apply(ctx, config) {
       requestController = controller
 
       const task = (async () => {
-        requestTimer = setTimeout(() => { controller.abort() }, config.requestTimeoutMs)
         try {
+          // undefined = 没有灰度结论（关闭或失败），按最高稳定版判断。
+          const offeredVersion = usesRollout()
+            ? (await askRollout(controller.signal, mode.manual === true))?.version
+            : undefined
+          if (controller.signal.aborted) return null
+          requestTimer = setTimeout(() => { controller.abort() }, config.requestTimeoutMs)
           return await checkForStableUpdate({
             currentVersion: adapter.currentVersion,
+            offeredVersion,
             signal: controller.signal,
             request: adapter.request,
             endpoint: releaseIndexEndpoint,
@@ -629,7 +765,9 @@ export function apply(ctx, config) {
           if (!confirmed || disposed) return
         }
 
-        const confirmedVersion = observeResult(await startCheck())
+        // 下载是用户主动要的，复查按手动检查问灰度接口；复查出更新的版本时不下载旧的，
+        // 侧栏换成新版本，用户再点一次即可。
+        const confirmedVersion = observeResult(await startCheck({ manual: true }))
         if (confirmedVersion !== version || disposed) return
 
         const asset = selectInstallerAsset(availableAssets)
@@ -688,12 +826,17 @@ export function apply(ctx, config) {
       return task
     }
 
+    /**
+     * 弹下载确认。后台检查只为大版本（第一或第二位数字变化）弹，且每个版本只弹一次，
+     * 重启后也不再弹；其余版本只靠侧栏按钮与托盘文字提示。手动检查照常弹。
+     */
     const offerDownload = async (version, automatic) => {
       if (disposed || !adapter.canDownload) return
       await stateReady
-      if (disposed || (automatic && autoPromptedVersion === version)) return
-      if (automatic) autoPromptedVersion = version
-      else await rememberPrompt(version)
+      if (disposed) return
+      if (automatic && (!isMajorUpdate(adapter.currentVersion, version)
+        || state.promptedVersions.includes(version))) return
+      await rememberPrompt(version)
       if (!disposed) await startDownload(version)
     }
 
@@ -710,7 +853,7 @@ export function apply(ctx, config) {
           await offerDownload(availableVersion, false)
           return
         }
-        const result = await startCheck()
+        const result = await startCheck({ manual: true })
         if (disposed) return
         const version = observeResult(result)
         if (version !== undefined) {
@@ -785,6 +928,13 @@ export function apply(ctx, config) {
   }, `${PACKAGE_NAME}: polling and installer handoff`)
 
   if (typeof ctx.inject === 'function') {
+    ctx.inject(['credentials'], (scoped) => {
+      const service = scoped.credentials
+      credentials = service
+      scoped.effect(() => () => {
+        if (credentials === service) credentials = undefined
+      }, `${PACKAGE_NAME}: optional TokensAPI key`)
+    })
     ctx.inject(['connection'], (scoped) => {
       scoped.effect(() => scoped.connection.rpc.handle(
         UPDATE_RPC_CHANNEL,
@@ -835,7 +985,7 @@ async function readLimitedBody(response) {
   }
 }
 
-function parseVersionResponse(body, currentVersion) {
+function parseVersionResponse(body, currentVersion, target) {
   let value
   try {
     value = JSON.parse(body)
@@ -844,14 +994,21 @@ function parseVersionResponse(body, currentVersion) {
   }
   const releases = Array.isArray(value) ? value : [value]
   let selected = null
-  for (const release of releases) {
-    const parsed = parseStableRelease(release)
-    if (parsed === null) continue
-    if (selected === null || compareParsedSemVer(parsed.latest, selected.latest) > 0) {
-      selected = parsed
+  if (target.offered === undefined) {
+    for (const release of releases) {
+      const parsed = parseStableRelease(release)
+      if (parsed === null) continue
+      if (selected === null || compareParsedSemVer(parsed.latest, selected.latest) > 0) {
+        selected = parsed
+      }
     }
+    if (selected === null) return null
+  } else {
+    if (!Array.isArray(value) && !isRecord(value)) return null
+    selected = target.offered === null
+      ? { latest: null, assets: [], notes: '' }
+      : parseOfferedRelease(releases, target)
   }
-  if (selected === null) return null
   // 已安装版本的正文按 tag 取，不经稳定版筛选：产品把 0.7.x 标成 GitHub 预发布，
   // 筛选会把它滤掉，而「已是最新」的弹窗要显示的正是这一版改了什么。
   const currentNotes = findReleaseNotes(releases, currentVersion)
@@ -939,6 +1096,21 @@ function parseStableRelease(value) {
   return { latest, assets: parseReleaseAssets(value.assets), notes: releaseBody(value) }
 }
 
+/**
+ * 灰度指定的那一版：按 tag 找，预发布也算（灰度期间新版本保持 GitHub 预发布）。
+ * 必须带本平台的安装包才可用；否则与找不到一样当作没有更新，绝不退回最高稳定版。
+ */
+function parseOfferedRelease(releases, target) {
+  const tag = `v${target.offered}`
+  for (const release of releases) {
+    if (!isRecord(release) || release.draft !== false || release.tag_name !== tag) continue
+    const assets = parseReleaseAssets(release.assets)
+    if (selectInstallerAsset(assets, target.platform, target.arch) === null) break
+    return { latest: parseCanonicalStableVersion(target.offered), assets, notes: releaseBody(release) }
+  }
+  return { latest: null, assets: [], notes: '' }
+}
+
 function parseReleaseAssets(value) {
   if (!Array.isArray(value)) return []
   const assets = []
@@ -1023,17 +1195,32 @@ function rewriteDownloadURL(url, baseURL) {
   return url.replace(/^https:\/\/github\.com/u, prefix)
 }
 
+/**
+ * 状态文件 v3 记下所有弹过下载确认的版本；v2（0.1.x 写的）只有最后一次手动检查
+ * 弹过的那一版，读进来就当作弹过。写回一律是 v3。
+ */
 function parseState(text) {
   const value = JSON.parse(text)
-  if (!isRecord(value)
-    || value.version !== 2
-    || (value.lastPromptedVersion !== undefined && !isStableVersion(value.lastPromptedVersion))
-    || Object.keys(value).some(key => !['version', 'lastPromptedVersion'].includes(key))) {
-    throw new Error('invalid v2 update state')
+  if (isRecord(value) && value.version === 2) {
+    if ((value.lastPromptedVersion !== undefined && !isStableVersion(value.lastPromptedVersion))
+      || Object.keys(value).some(key => !['version', 'lastPromptedVersion'].includes(key))) {
+      throw new Error('invalid v2 update state')
+    }
+    return value.lastPromptedVersion === undefined
+      ? EMPTY_STATE
+      : { version: STATE_VERSION, promptedVersions: [value.lastPromptedVersion] }
   }
-  return value.lastPromptedVersion === undefined
-    ? EMPTY_STATE
-    : { version: 2, lastPromptedVersion: value.lastPromptedVersion }
+  if (!isRecord(value)
+    || value.version !== STATE_VERSION
+    || !Array.isArray(value.promptedVersions)
+    || !value.promptedVersions.every(isStableVersion)
+    || Object.keys(value).some(key => !['version', 'promptedVersions'].includes(key))) {
+    throw new Error('invalid v3 update state')
+  }
+  return {
+    version: STATE_VERSION,
+    promptedVersions: [...new Set(value.promptedVersions)].slice(-MAX_PROMPTED_VERSIONS),
+  }
 }
 
 async function readState(filename) {
@@ -1060,6 +1247,35 @@ function isStableVersion(value) {
 
 function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** 安装标识原样放进请求头，所以只收一段可见 ASCII；格式由服务端校验。 */
+function isInstallationId(value) {
+  return typeof value === 'string' && /^[\x21-\x7e]{1,128}$/u.test(value)
+}
+
+/** 灰度地址：空串或非 HTTPS 一律视为关闭，返回空串。 */
+function resolveRolloutURL(configured) {
+  if (typeof configured !== 'string' || configured.trim() === '') return ''
+  try {
+    const url = new URL(configured.trim())
+    return url.protocol === 'https:' ? url.href : ''
+  } catch {
+    return ''
+  }
+}
+
+/** credentials 服务的解析结果可能是字符串，也可能是带 value 的记录。 */
+function resolvedValue(resolved) {
+  if (typeof resolved === 'string') return resolved
+  if (isRecord(resolved) && typeof resolved.value === 'string') return resolved.value
+  return ''
+}
+
+function after(ms, value) {
+  return new Promise(settle => {
+    AbortSignal.timeout(ms).addEventListener('abort', () => settle(value), { once: true })
+  })
 }
 
 function isEnoent(value) {

@@ -70,3 +70,17 @@ export const INTERVAL_MS = 6 * 60 * 60 * 1000
 
 /** 单次版本请求的超时（毫秒）。可被 config.requestTimeoutMs 覆盖。 */
 export const REQUEST_TIMEOUT_MS = 15_000
+
+/* ====================================================================
+ * 灰度接口
+ * 每项均为 Config 同名字段的默认值，用户可经 profile 补丁覆盖。
+ * ==================================================================== */
+
+/**
+ * 灰度接口：检查更新前先问它「给我哪个版本」。空串关闭灰度、只按版本源里最高的
+ * 稳定版判断；只接受 HTTPS，其余写法同样视为关闭。可被 config.rolloutURL 覆盖。
+ */
+export const ROLLOUT_URL = 'https://market.tokensapi.ai/v1/app/update'
+
+/** 单次灰度请求的超时（毫秒）；超时与失败一样退回版本源里最高的稳定版。 */
+export const ROLLOUT_TIMEOUT_MS = 10_000

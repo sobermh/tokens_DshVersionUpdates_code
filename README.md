@@ -1,6 +1,6 @@
 # TokensHarness Updates
 
-`@tokens/dsh-version-updates` 是 TokensHarness 的独立 Cordis Host 插件。它优先读取公开的 GitHub Pages `releases.json`，从中选择 `draft=false`、`prerelease=false` 的最高稳定版本；索引不可用时降级读取 [`TokensAPI/tokens_TokensHarness_code`](https://github.com/TokensAPI/tokens_TokensHarness_code) 的 latest GitHub Release API，不使用 npm 作为产品版本源。
+`@tokens/dsh-version-updates` 是 TokensHarness 的独立 Cordis Host 插件。它优先读取公开的 GitHub Pages `releases.json`，从中选择 `draft=false`、`prerelease=false` 的最高稳定版本；索引不可用时降级读取 [`TokensAPI/tokens_TokensHarness_code`](https://github.com/TokensAPI/tokens_TokensHarness_code) 的 latest GitHub Release API，不使用 npm 作为产品版本源。检查前先问市场服务端的灰度接口该给哪个版本（见[灰度接口](#灰度接口)），接口不可用时就是上面这套逻辑。
 
 插件通过 `desktopRuntime` 使用 TokensHarness 提供的原生托盘、网络和确认对话框能力，并通过私有回环 `webServer` 接管 Desktop 顶部版本按钮。它自行流式下载、校验和打开 Windows / macOS 安装包，负责定时检查、手工检查、版本比较和提示历史；顶部按钮与托盘复用同一个手工检查任务。
 
@@ -29,6 +29,57 @@
 使用。两个内置默认地址集中写在 `identity.js`；任一字段留空都会继续使用默认地址，
 修改了 `githubOwner` / `githubRepo` 时则按新仓库自动派生。无效地址或非 HTTPS 地址
 也会回退到对应默认值。
+
+## 什么时候弹窗
+
+| 情况 | 行为 |
+| --- | --- |
+| 后台检查发现**大版本**（与已装版本相比第一位或第二位数字变化，如 0.7.x → 0.8.0） | 弹一次确认下载对话框；点「稍后」后这个版本不再自动弹 |
+| 后台检查发现其他版本（如 0.7.19 → 0.7.20） | 不弹窗、不发通知；只有侧栏下载按钮和托盘菜单文字变化 |
+| 用户手动「检查更新」、点顶部版本按钮或侧栏下载按钮 | 与以前相同：有新版就弹确认，没有就弹「已是最新」 |
+
+弹过确认的版本（自动或手动）都记进宿主给的状态文件 `statePath`，启动时读回，所以
+重启后同一版本不会再自动弹。状态文件格式为 v3：
+
+```json
+{ "version": 3, "promptedVersions": ["0.8.0"] }
+```
+
+最多保留最近 32 个版本。0.1.x 写的 v2 文件（`{ "version": 2, "lastPromptedVersion": "0.8.0" }`）
+照常读取，其中的版本视为已弹过；下次写入时改写为 v3。内容不合法的文件会被修复为空的 v3。
+
+## 灰度接口
+
+每次检查先问市场服务端「这台安装该拿哪个版本」，再去版本索引里取安装包：
+
+```
+GET <rolloutURL>?version=<已装版本>&platform=<process.platform>&arch=<process.arch>[&manual=1]
+X-Installation-Id: <desktopRuntime.updates.installationId>
+Authorization: Bearer <TokensAPI Key>        （可选）
+```
+
+- `platform` / `arch` 是 Node 的写法（`win32` / `darwin`，`x64` / `arm64`）。手动检查，
+  以及确认下载之后、开始下载之前的那次复查带 `manual=1`；后台检查不带。
+- Key 经可选的 `credentials` 服务解析 `TOKENSAPI_API_KEY`（最多等 5 秒）；没有该服务、
+  没登录或解析失败都不带这个头。
+- 回答 `{ "version": "x.y.z" }`：在版本索引里按 `v<x.y.z>` 找这一版，**预发布也算**；
+  找到且有本平台安装包才算有更新，否则当作没有更新（不会退回最高稳定版）。主地址里没有
+  这一版时会再看降级地址。服务端给的版本不高于已装版本时同样当作没有更新，绝不降级。
+- 回答 `{ "version": null }`：没有更新。
+- 请求失败、非 200、10 秒超时、回答不合法（缺 `version` 字段、不是 `x.y.z`）：退回旧逻辑，
+  取版本索引里最高的稳定版。服务端不可用时更新照常能用。
+- 宿主没有提供 `installationId` 时不请求，直接走旧逻辑。
+
+下载、校验、安装与以前完全相同；服务端只回答版本号。地址可以在档案里覆盖：
+
+```yaml
+- id: tokens-version-updates
+  config:
+    rolloutURL: https://market.example.com/v1/app/update   # 空字符串 = 关闭灰度
+```
+
+默认地址 `https://market.tokensapi.ai/v1/app/update` 写在 `identity.js`。只接受 HTTPS；
+空字符串、非 HTTPS 或无效地址都视为关闭（不会把安装标识发往别处），只按最高稳定版判断。
 
 ## 自动下载的适用范围
 
@@ -153,7 +204,7 @@ npm run check
 ## 真实宿主契约测试
 
 插件用到的**每一个**宿主接口都有一条对真实 staged 宿主的常驻用例
-（`HOST-001`…`HOST-023`），宿主侧零打桩：宿主自带 launcher 起一次性
+（`HOST-001`…`HOST-024`），宿主侧零打桩：宿主自带 launcher 起一次性
 `$DSH_HOME`，真实 Loader 按 `inject` 激活本插件，`desktopRuntime` 由宿主自己的
 `host-runtime-bridge.ts` 跨一对真实 `HostRpc` 投影，`webServer` 是宿主的
 `DesktopWebServer` 真绑回环端口，浏览器 Cookie 由宿主自己签发。
@@ -163,7 +214,7 @@ npm run check
 DSH_HOST_ROOT=…\.build\desktop\dsh-plugin-desktop npm run check:host
 ```
 
-没有 `DSH_HOST_ROOT` 时 23 条全部报 `NOT EXECUTED`、退出码为 1，不伪造通过。
+没有 `DSH_HOST_ROOT` 时 24 条全部报 `NOT EXECUTED`、退出码为 1，不伪造通过。
 接口与用例的逐条对照、三处脚本化边界、三个 staged 宿主的结果，见
 [docs/host-interfaces.md](docs/host-interfaces.md)。
 

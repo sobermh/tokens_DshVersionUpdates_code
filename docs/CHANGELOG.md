@@ -1,5 +1,31 @@
 # 变更记录
 
+## [0.2.0] - 2026-11-25
+
+后台检查不再每次启动都弹窗；接入市场服务端的灰度接口。
+
+- **提醒改软**：后台检查只为大版本（与已装版本相比第一位或第二位数字变化，如
+  0.7.x → 0.8.0）弹确认下载对话框，且每个版本只弹一次；其余版本不弹窗、不通知，只有
+  侧栏下载按钮和托盘文字变化。手动检查、顶部版本按钮与侧栏按钮的行为不变。
+- 弹过的版本写进状态文件并在启动时读回，重启后不再重复弹。以前「已自动提示」只记在
+  内存里，所以每次启动都会再弹；`lastPromptedVersion` 只写不读。
+- 状态文件升到 v3：`{ "version": 3, "promptedVersions": [...] }`（最多 32 个）。v2 照常
+  读取，其中的 `lastPromptedVersion` 视为已弹过；写回一律是 v3。
+- **灰度接口**：新配置项 `rolloutURL`（默认 `https://market.tokensapi.ai/v1/app/update`；
+  空字符串或非 HTTPS 视为关闭）。检查时先 `GET` 它，带 `version`、`platform`、`arch`、
+  手动时带 `manual=1`，头 `X-Installation-Id` 取 `desktopRuntime.updates.installationId`，
+  Key 经可选的 `credentials` 服务解析 `TOKENSAPI_API_KEY`，有才带 `Authorization: Bearer`。
+  - `{ "version": "x.y.z" }`：在版本索引里按 tag 找这一版（含预发布），有本平台安装包
+    才提供，否则当作没有更新；`{ "version": null }`：没有更新。
+  - 失败、10 秒超时、回答不合法，或宿主没有安装标识：退回原来的逻辑（最高稳定版）。
+  - 下载前的复查按手动检查问灰度接口；下载、校验、安装流程不变。
+- 新导出 `requestRolloutVersion`、`isMajorUpdate`；`checkForStableUpdate` 新增可选的
+  `offeredVersion`、`platform`、`arch`。
+- 新增用例 `PROMPT-04`…`06`、`STATE-04`、`ROLLOUT-01`…`08` 与真实宿主契约 `HOST-024`
+  （安装标识与自定义请求头经真实桥到达），`PROMPT-02` 改为「重启后不再弹」。
+  `COMPAT-01`…`03` 编译 staged 宿主桥时把 `electron` 留作外部引用（产品外壳的桥里有按需
+  `import('electron')` 的分支，staged 宿主不装 electron）。
+
 ## [0.1.7] - 2026-10-26
 
 弹窗里的英文要点不再被砍得只剩主语。
@@ -144,3 +170,4 @@
 [0.1.5]: https://github.com/sobermh/tokens_DshVersionUpdates_code/compare/v0.1.4...v0.1.5
 [0.1.6]: https://github.com/sobermh/tokens_DshVersionUpdates_code/compare/v0.1.5...v0.1.6
 [0.1.7]: https://github.com/sobermh/tokens_DshVersionUpdates_code/compare/v0.1.6...v0.1.7
+[0.2.0]: https://github.com/sobermh/tokens_DshVersionUpdates_code/compare/v0.1.7...v0.2.0

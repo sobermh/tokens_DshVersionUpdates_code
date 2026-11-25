@@ -258,6 +258,7 @@ function createNativeRuntime(home, overrides = {}) {
       canDownload: overrides.canDownload ?? true,
       currentVersion: overrides.currentVersion ?? '0.7.3',
       statePath: overrides.statePath ?? path.join(home, 'state', 'tokens-version-updates.json'),
+      ...(overrides.installationId === undefined ? {} : { installationId: overrides.installationId }),
       request: async (url, init) => {
         calls.requests.push({ url, init })
         if (state.respond === undefined) {

@@ -49,6 +49,8 @@ export interface Config {
   releaseIndexURL?: string
   /** HTTPS fallback API override; empty derives the GitHub API URL from githubOwner/githubRepo. */
   releaseAPIURL?: string
+  /** HTTPS rollout service asked which version to offer first; empty (or non-HTTPS) turns the rollout off. */
+  rolloutURL: string
 }
 
 /** Callable configuration validator supplied by Schemastery. */
@@ -62,6 +64,8 @@ export interface UpdateAdapter {
   readonly canDownload: boolean
   readonly currentVersion: string
   readonly statePath: string
+  /** Random per-installation identity; absent on hosts that do not provide one, which skips the rollout service. */
+  readonly installationId?: string
   readonly request: UpdateRequest
   confirmDownload(version: string): Promise<boolean>
   showManualCheckResult(result: UpdateCheckResult | null): Promise<void>
@@ -110,6 +114,12 @@ export interface UpdatePluginContext {
   readonly desktopRuntime: UpdateDesktopRuntime
   readonly webServer: UpdateWebServer
   inject?(
+    services: readonly ['credentials'],
+    apply: (ctx: UpdatePluginContext & {
+      readonly credentials?: { resolve(ref: string): Promise<unknown> }
+    }) => void,
+  ): void
+  inject?(
     services: readonly ['connection'],
     apply: (ctx: UpdatePluginContext & {
       readonly connection: {
@@ -145,8 +155,25 @@ export function handleDesktopUpdateCheckRequest(
   expectedOrigin: string,
   checkNow: () => Promise<void>,
 ): Promise<void>
+export function isMajorUpdate(currentVersion: string, nextVersion: string): boolean
+export function requestRolloutVersion(options: {
+  endpoint: string
+  currentVersion: string
+  installationId: unknown
+  apiKey?: string
+  manual?: boolean
+  platform?: string
+  arch?: string
+  signal?: AbortSignal
+  request?: UpdateRequest
+  userAgent?: string
+}): Promise<{ version: string | null } | null>
 export function checkForStableUpdate(options: {
   currentVersion: string
+  /** Rollout answer: a version to look up by tag (pre-releases included), null for "no update", undefined for the highest stable Release. */
+  offeredVersion?: string | null
+  platform?: string
+  arch?: string
   signal?: AbortSignal
   request?: UpdateRequest
   endpoint?: string

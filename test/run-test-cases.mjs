@@ -20,11 +20,13 @@ import {
   compareSemVerVersions,
   describeDownloadPrompt,
   describeManualCheck,
+  isMajorUpdate,
   parseSemVer,
   presentUpdateDialog,
   productDataDirectory,
   releaseNotesEndpoint,
   releaseTagPageURL,
+  requestRolloutVersion,
   resolveDownloadDirectory,
 } from '../index.js'
 import {
@@ -489,7 +491,11 @@ function harness(options = {}) {
       const disposer = register()
       if (typeof disposer === 'function') disposers.push(disposer)
     },
-    inject(_services, apply) {
+    inject(services, apply) {
+      if (services[0] === 'credentials') {
+        if (options.credentials !== undefined) apply({ ...ctx, credentials: options.credentials })
+        return
+      }
       if (!options.connection) return
       apply({
         ...ctx,
@@ -1557,7 +1563,7 @@ test('102 declining a download still records the prompted version', async () => 
     await tray.invoke()
     await dispose()
     const state = JSON.parse(await readFile(join(root, 'state.json'), 'utf8'))
-    assert.deepEqual(state, { version: 2, lastPromptedVersion: '0.2.0' })
+    assert.deepEqual(state, { version: 3, promptedVersions: ['0.2.0'] })
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -1570,7 +1576,7 @@ test('103 a corrupt state file is repaired into a valid empty state', async () =
     const host = harness({ root, request: async () => release({ tag_name: 'v0.1.0' }) })
     const { tray, dispose } = host.start()
     const settled = await waitForState(join(root, 'state.json'), text => text.trim() !== 'not json at all')
-    assert.deepEqual(JSON.parse(settled), { version: 2 })
+    assert.deepEqual(JSON.parse(settled), { version: 3, promptedVersions: [] })
     await tray.invoke()
     await dispose()
   } finally {
@@ -1598,7 +1604,7 @@ test('105 a state file carrying unexpected keys is repaired', async () => {
     const host = harness({ root, request: async () => release({ tag_name: 'v0.1.0' }) })
     const { tray, dispose } = host.start()
     const settled = await waitForState(join(root, 'state.json'), text => !text.includes('evil'))
-    assert.deepEqual(JSON.parse(settled), { version: 2 })
+    assert.deepEqual(JSON.parse(settled), { version: 3, promptedVersions: [] })
     await tray.invoke()
     await dispose()
   } finally {
@@ -1629,7 +1635,7 @@ test('107 an oversized state file is rejected rather than parsed', async () => {
     // observes the completed repair instead of racing the background read.
     await tray.invoke()
     const settled = await readFile(join(root, 'state.json'), 'utf8')
-    assert.deepEqual(JSON.parse(settled), { version: 2, lastPromptedVersion: '0.2.0' })
+    assert.deepEqual(JSON.parse(settled), { version: 3, promptedVersions: ['0.2.0'] })
     await dispose()
   } finally {
     await rm(root, { recursive: true, force: true })
@@ -1795,19 +1801,25 @@ test('117 background polling prompts only once for the same version', async () =
   }
 })
 
-test('118 background polling prompts again after app restart', async () => {
+test('118 background polling does not prompt again after app restart for a version a 0.1.x state remembers', async () => {
   const root = await tempDir('restart-prompt')
   try {
+    // 0.1.x 写的 v2 状态：lastPromptedVersion 是手动检查弹过的那一版，读进来就算弹过。
     await writeFile(join(root, 'state.json'), JSON.stringify({ version: 2, lastPromptedVersion: '0.2.0' }))
     const host = harness({
       root,
       adapter: { isPackaged: true },
       request: async () => release({ tag_name: 'v0.2.0' }),
     })
-    const { dispose } = host.start({ enabled: true, initialDelayMs: 1, intervalMs: 3_600_000 })
+    const { tray, dispose } = host.start({ enabled: true, initialDelayMs: 1, intervalMs: 3_600_000 })
     await new Promise(resolve => { setTimeout(resolve, 80) })
-    await dispose()
+    assert.equal(host.log.requests.length, 1)
+    assert.deepEqual(host.log.confirmed, [], 'a version prompted before the restart must not prompt again')
+    assert.equal(tray.label(), 'TokensHarness 0.2.0 Available', 'the update is still announced in the tray')
+    // 手动检查不受影响：照常弹。
+    await tray.invoke()
     assert.deepEqual(host.log.confirmed, ['0.2.0'])
+    await dispose()
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -3617,6 +3629,439 @@ test('199 the budget is counted in display columns so English highlights carry t
   }
 })
 
+/* ==================== 22. 提醒改软与灰度接口 ==================== */
+
+const ROLLOUT_TEST_URL = 'https://rollout.host-contract.test/v1/app/update'
+const TEST_INSTALLATION_ID = '0f8fad5b-d9cb-469f-a165-70867728950e'
+
+/** 版本索引里的一条 Release；默认带本平台安装包。 */
+function indexRelease(version, { prerelease = false, installer = true, body = '', payload } = {}) {
+  const asset = downloadableRelease(version, payload ?? Buffer.from(`installer-${version}`))
+  return {
+    tag_name: `v${version}`,
+    draft: false,
+    prerelease,
+    body,
+    assets: installer
+      ? [{
+        name: asset.name,
+        browser_download_url: `https://github.com/o/r/releases/download/v${version}/${asset.name}`,
+        size: asset.size,
+        digest: asset.digest,
+      }]
+      : [],
+  }
+}
+
+/**
+ * 带安装标识的宿主：灰度接口与版本索引都走 adapter.request 的本地桩，
+ * 地址是测试专用域名，绝不请求线上服务。
+ */
+function rolloutHarness({ root, rollout, releases, adapter = {}, ...rest }) {
+  return harness({
+    root,
+    adapter: { installationId: TEST_INSTALLATION_ID, ...adapter },
+    request: async (url, init) => url.startsWith(ROLLOUT_TEST_URL)
+      ? rollout(url, init)
+      : Response.json(releases),
+    ...rest,
+  })
+}
+
+const rolloutRequests = host => host.log.requests.filter(call => call.url.startsWith(ROLLOUT_TEST_URL))
+
+test('200 isMajorUpdate only counts a change in the first or second version number', () => {
+  assert.equal(isMajorUpdate('0.7.19', '0.8.0'), true)
+  assert.equal(isMajorUpdate('0.7.19', '1.0.0'), true)
+  assert.equal(isMajorUpdate('1.9.3', '2.9.3'), true)
+  assert.equal(isMajorUpdate('0.7.19', '0.7.20'), false)
+  assert.equal(isMajorUpdate('0.7.0', '0.7.0'), false)
+  assert.equal(isMajorUpdate('0.7.19', 'garbage'), false)
+  assert.equal(isMajorUpdate(undefined, '0.8.0'), false)
+})
+
+test('201 the rollout request carries version, platform, arch, manual, the installation id and an optional key', async () => {
+  const calls = []
+  const answer = body => async (url, init) => {
+    calls.push({ url: new URL(url), headers: new Headers(init.headers), init })
+    return Response.json(body)
+  }
+  const base = {
+    endpoint: ROLLOUT_TEST_URL,
+    currentVersion: '0.7.19',
+    installationId: TEST_INSTALLATION_ID,
+    platform: 'win32',
+    arch: 'x64',
+    userAgent: 'TokensCowork',
+  }
+  assert.deepEqual(await requestRolloutVersion({ ...base, request: answer({ version: '0.8.0' }) }), { version: '0.8.0' })
+  const [first] = calls
+  assert.equal(first.url.origin + first.url.pathname, ROLLOUT_TEST_URL)
+  assert.deepEqual(Object.fromEntries(first.url.searchParams), { version: '0.7.19', platform: 'win32', arch: 'x64' })
+  assert.equal(first.headers.get('x-installation-id'), TEST_INSTALLATION_ID)
+  assert.equal(first.headers.get('authorization'), null, 'no key, no Authorization header')
+  assert.equal(first.headers.get('user-agent'), 'TokensCowork')
+  assert.equal(first.init.redirect, 'error')
+  assert.equal(first.init.cache, 'no-store')
+
+  assert.deepEqual(await requestRolloutVersion({
+    ...base, manual: true, apiKey: ' sk-test ', request: answer({ version: null }),
+  }), { version: null })
+  assert.equal(calls[1].url.searchParams.get('manual'), '1')
+  assert.equal(calls[1].headers.get('authorization'), 'Bearer sk-test')
+})
+
+test('202 a failed, invalid or downgrading rollout answer never decides the update', async () => {
+  const base = { endpoint: ROLLOUT_TEST_URL, currentVersion: '0.7.19', installationId: TEST_INSTALLATION_ID }
+  const ask = (respond, extra = {}) => requestRolloutVersion({ ...base, request: respond, ...extra })
+  // 失败与不合法一律 null：调用方退回最高稳定版。
+  assert.equal(await ask(async () => Response.json({ error: 'down' }, { status: 503 })), null)
+  assert.equal(await ask(async () => { throw new Error('offline') }), null)
+  assert.equal(await ask(async () => new Response('not json')), null)
+  assert.equal(await ask(async () => Response.json({})), null, 'a missing version field is not "no update"')
+  assert.equal(await ask(async () => Response.json([{ version: '0.8.0' }])), null)
+  assert.equal(await ask(async () => Response.json({ version: 'v0.8.0' })), null)
+  assert.equal(await ask(async () => Response.json({ version: '0.8.0-rc.1' })), null)
+  assert.equal(await ask(async () => Response.json({ version: 8 })), null)
+  // 一个已中止的信号（超时就是这样到达的）：请求被拒，同样退回。
+  assert.equal(await ask(async (_url, init) => {
+    init.signal.throwIfAborted()
+    return Response.json({ version: '0.8.0' })
+  }, { signal: AbortSignal.abort() }), null)
+  // 服务端给了不高于已装的版本：不降级，当作没有更新。
+  assert.deepEqual(await ask(async () => Response.json({ version: '0.7.19' })), { version: null })
+  assert.deepEqual(await ask(async () => Response.json({ version: '0.6.0' })), { version: null })
+  // 没有安装标识或地址不是 HTTPS：不发请求。
+  let sent = 0
+  const counting = async () => { sent += 1; return Response.json({ version: '0.8.0' }) }
+  assert.equal(await ask(counting, { installationId: undefined }), null)
+  assert.equal(await ask(counting, { installationId: '' }), null)
+  assert.equal(await ask(counting, { installationId: 'bad\r\nid' }), null)
+  assert.equal(await ask(counting, { endpoint: 'http://rollout.test/v1/app/update' }), null)
+  assert.equal(sent, 0)
+})
+
+test('203 an offered version is looked up by tag, pre-releases included, and needs this platform installer', async () => {
+  const releases = [
+    indexRelease('0.7.20'),
+    indexRelease('0.8.0', { prerelease: true, body: 'rollout notes' }),
+    indexRelease('0.8.1', { prerelease: true, installer: false }),
+    { ...indexRelease('0.8.2'), draft: true },
+  ]
+  const check = (offeredVersion, extra = {}) => checkForStableUpdate({
+    currentVersion: '0.7.19',
+    offeredVersion,
+    platform: process.platform,
+    arch: process.arch,
+    request: async () => Response.json(releases),
+    endpoint: 'https://example.test/releases.json',
+    ...extra,
+  })
+  if (SUPPORTED_HOST) {
+    const offered = await check('0.8.0')
+    assert.equal(offered.status, 'update-available')
+    assert.equal(offered.latestVersion, '0.8.0')
+    assert.equal(offered.notes, 'rollout notes')
+    assert.equal(offered.assets.length, 1)
+  }
+  // 不在列表里、没有本平台安装包、草稿：都当作没有更新，不退回最高稳定版 0.7.20。
+  for (const version of ['0.9.0', '0.8.1', '0.8.2']) {
+    const result = await check(version)
+    assert.equal(result.status, 'up-to-date', version)
+    assert.equal(result.latestVersion, '0.7.19', version)
+    assert.deepEqual(result.assets, [], version)
+  }
+  // 服务端说没有更新：已是最新，即使列表里有更高的稳定版。
+  assert.equal((await check(null)).status, 'up-to-date')
+  // 没有灰度结论：旧逻辑，最高稳定版。
+  assert.equal((await check(undefined)).latestVersion, '0.7.20')
+  // 主地址没有这一版时再看降级地址。
+  if (SUPPORTED_HOST) {
+    const seen = []
+    const fromFallback = await check('0.8.0', {
+      fallbackEndpoint: 'https://example.test/releases/latest',
+      request: async (url) => {
+        seen.push(url)
+        return url.endsWith('/releases.json') ? Response.json([indexRelease('0.7.20')]) : Response.json(releases[1])
+      },
+    })
+    assert.equal(fromFallback.latestVersion, '0.8.0')
+    assert.deepEqual(seen, ['https://example.test/releases.json', 'https://example.test/releases/latest'])
+  }
+  // 索引全部不可用：检查失败，与旧逻辑一致；不规范的版本号直接拒绝。
+  assert.equal(await check('0.8.0', { request: async () => { throw new Error('offline') } }), null)
+  assert.equal(await check('v0.8.0'), null)
+})
+
+test('204 a manual check asks the rollout service first and offers the version it names', {
+  skip: SUPPORTED_HOST ? false : 'unsupported host platform',
+}, async () => {
+  const root = await tempDir('rollout-manual')
+  try {
+    const host = rolloutHarness({
+      root,
+      credentials: { resolve: async ref => (ref === 'TOKENSAPI_API_KEY' ? { value: 'sk-user' } : undefined) },
+      rollout: async () => Response.json({ version: '0.3.0' }),
+      releases: [indexRelease('0.2.0'), indexRelease('0.3.0', { prerelease: true })],
+    })
+    const { tray, dispose } = host.start({ rolloutURL: ROLLOUT_TEST_URL })
+    await tray.invoke()
+    assert.equal(host.log.requests[0].url.startsWith(ROLLOUT_TEST_URL), true, 'the rollout service is asked first')
+    const [call] = rolloutRequests(host)
+    const url = new URL(call.url)
+    assert.equal(url.searchParams.get('version'), '0.1.0')
+    assert.equal(url.searchParams.get('platform'), process.platform)
+    assert.equal(url.searchParams.get('arch'), process.arch)
+    assert.equal(url.searchParams.get('manual'), '1')
+    const headers = new Headers(call.init.headers)
+    assert.equal(headers.get('x-installation-id'), TEST_INSTALLATION_ID)
+    assert.equal(headers.get('authorization'), 'Bearer sk-user')
+    assert.deepEqual(host.log.confirmed, ['0.3.0'], 'the pre-release the service named is offered')
+    assert.equal(tray.label(), 'TokensHarness 0.3.0 Available')
+    await dispose()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('205 a rollout answer of null means no update, even with a newer stable release listed', async () => {
+  const root = await tempDir('rollout-none')
+  try {
+    const host = rolloutHarness({
+      root,
+      rollout: async () => Response.json({ version: null }),
+      releases: [indexRelease('0.2.0')],
+    })
+    const { tray, dispose } = host.start({ rolloutURL: ROLLOUT_TEST_URL })
+    await tray.invoke()
+    assert.deepEqual(host.log.confirmed, [])
+    assert.equal(host.log.manual.length, 1)
+    assert.equal(host.log.manual[0].status, 'up-to-date')
+    assert.equal(tray.label(), 'Check Updates…')
+    await dispose()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('206 a version the service names but the release list lacks is no update, not the newest stable', async () => {
+  const root = await tempDir('rollout-missing')
+  try {
+    const host = rolloutHarness({
+      root,
+      rollout: async () => Response.json({ version: '0.9.0' }),
+      releases: [indexRelease('0.2.0')],
+    })
+    const { tray, dispose } = host.start({ rolloutURL: ROLLOUT_TEST_URL })
+    await tray.invoke()
+    assert.deepEqual(host.log.confirmed, [])
+    assert.equal(host.log.manual[0].status, 'up-to-date')
+    await dispose()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('207 a failed or invalid rollout answer falls back to the newest stable release', async () => {
+  const answers = [
+    async () => Response.json({ error: 'down' }, { status: 503 }),
+    async () => { throw new Error('offline') },
+    async () => new Response('<html>'),
+    async () => Response.json({ version: 'latest' }),
+  ]
+  for (const [index, rollout] of answers.entries()) {
+    const root = await tempDir(`rollout-fail-${index}`)
+    try {
+      const host = rolloutHarness({ root, rollout, releases: [indexRelease('0.2.0'), indexRelease('0.3.0', { prerelease: true })] })
+      const { tray, dispose } = host.start({ rolloutURL: ROLLOUT_TEST_URL })
+      await tray.invoke()
+      assert.equal(rolloutRequests(host).length, 1, `answer ${index}`)
+      assert.deepEqual(host.log.confirmed, ['0.2.0'], `answer ${index} must fall back to the stable release`)
+      await dispose()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+})
+
+test('208 a rollout request that never answers is cut off after ten seconds and the check falls back', async () => {
+  const root = await tempDir('rollout-timeout')
+  try {
+    let rolloutSignal
+    const host = rolloutHarness({
+      root,
+      rollout: async (_url, init) => {
+        rolloutSignal = init.signal
+        return new Promise((_resolve, reject) => {
+          init.signal.addEventListener('abort', () => { reject(init.signal.reason) })
+        })
+      },
+      releases: [indexRelease('0.2.0')],
+    })
+    const { tray, dispose } = host.start({ rolloutURL: ROLLOUT_TEST_URL })
+    const started = Date.now()
+    await tray.invoke()
+    const elapsed = Date.now() - started
+    assert.equal(rolloutSignal.aborted, true, 'the rollout request is aborted by its own timeout')
+    assert.ok(elapsed >= 9_000 && elapsed < 14_000, `cut off after ${elapsed} ms`)
+    assert.deepEqual(host.log.confirmed, ['0.2.0'])
+    await dispose()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('209 without an installation id, or with rolloutURL empty or not HTTPS, the service is never asked', async () => {
+  const cases = [
+    { adapter: { installationId: undefined }, config: { rolloutURL: ROLLOUT_TEST_URL } },
+    { adapter: {}, config: { rolloutURL: '' } },
+    { adapter: {}, config: { rolloutURL: 'http://rollout.host-contract.test/v1/app/update' } },
+  ]
+  for (const [index, { adapter, config }] of cases.entries()) {
+    const root = await tempDir(`rollout-off-${index}`)
+    try {
+      const host = rolloutHarness({
+        root,
+        adapter,
+        rollout: async () => Response.json({ version: null }),
+        releases: [indexRelease('0.2.0')],
+      })
+      const { tray, dispose } = host.start(config)
+      await tray.invoke()
+      assert.deepEqual(host.log.requests.map(call => new URL(call.url).hostname).filter(name => name.startsWith('rollout')), [],
+        `case ${index} must not contact the rollout service`)
+      assert.deepEqual(host.log.confirmed, ['0.2.0'], `case ${index} keeps the stable-release logic`)
+      await dispose()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+  // 默认地址是市场服务；只核对配置值，不发请求。
+  assert.equal(Config({}).rolloutURL, 'https://market.tokensapi.ai/v1/app/update')
+})
+
+test('210 a background check prompts once for a big update, and not again after a restart', async () => {
+  const root = await tempDir('big-once')
+  try {
+    const boot = () => rolloutHarness({
+      root,
+      adapter: { isPackaged: true, currentVersion: '0.7.19' },
+      rollout: async () => Response.json({ version: '0.8.0' }),
+      releases: [indexRelease('0.8.0', { prerelease: true })],
+    })
+    const first = boot()
+    const firstRun = first.start({ rolloutURL: ROLLOUT_TEST_URL, enabled: true, initialDelayMs: 1, intervalMs: 20 })
+    await new Promise(resolve => { setTimeout(resolve, 150) })
+    await firstRun.dispose()
+    assert.ok(rolloutRequests(first).length >= 2, 'the poll loop keeps running')
+    assert.ok(rolloutRequests(first).every(call => !new URL(call.url).searchParams.has('manual')),
+      'background checks never claim to be manual')
+    assert.deepEqual(first.log.confirmed, ['0.8.0'], 'one dialog for the big update')
+    assert.deepEqual(JSON.parse(await readFile(join(root, 'state.json'), 'utf8')),
+      { version: 3, promptedVersions: ['0.8.0'] })
+
+    const second = boot()
+    const secondRun = second.start({ rolloutURL: ROLLOUT_TEST_URL, enabled: true, initialDelayMs: 1, intervalMs: 3_600_000 })
+    await new Promise(resolve => { setTimeout(resolve, 80) })
+    assert.equal(rolloutRequests(second).length, 1)
+    assert.deepEqual(second.log.confirmed, [], 'the restarted app must not prompt for the same version')
+    assert.equal(secondRun.tray.label(), 'TokensHarness 0.8.0 Available')
+    await secondRun.dispose()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('211 a background check never opens a dialog or notifies for a small update, but still marks it available', async () => {
+  const root = await tempDir('small-quiet')
+  try {
+    const notified = []
+    const host = harness({
+      root,
+      connection: true,
+      adapter: { isPackaged: true, currentVersion: '0.7.19', notify: value => { notified.push(value) } },
+      request: async () => release({ tag_name: 'v0.7.20' }),
+    })
+    const { tray, rpc, dispose } = host.start({ enabled: true, initialDelayMs: 1, intervalMs: 3_600_000 })
+    await new Promise(resolve => { setTimeout(resolve, 80) })
+    assert.equal(host.log.requests.length, 1)
+    assert.deepEqual(host.log.confirmed, [], 'no dialog for 0.7.19 → 0.7.20')
+    assert.deepEqual(notified, [], 'no notification either')
+    assert.equal(tray.label(), 'TokensHarness 0.7.20 Available')
+    assert.deepEqual(await rpc('status'), {
+      ok: true,
+      value: { phase: 'available', productName: 'TokensHarness', version: '0.7.20' },
+    })
+    await assert.rejects(readFile(join(root, 'state.json'), 'utf8'), { code: 'ENOENT' },
+      'a version that was never shown is not remembered')
+    // 手动检查不受影响：照常弹。
+    await tray.invoke()
+    assert.deepEqual(host.log.confirmed, ['0.7.20'])
+    await dispose()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('212 a v3 state with an invalid remembered version is repaired, and a valid one is read back', async () => {
+  const root = await tempDir('v3-state')
+  try {
+    await writeFile(join(root, 'state.json'), JSON.stringify({ version: 3, promptedVersions: ['0.2.0', 'v0.3.0'] }))
+    const host = harness({ root, request: async () => release({ tag_name: 'v0.1.0' }) })
+    const { tray, dispose } = host.start()
+    const settled = await waitForState(join(root, 'state.json'), text => !text.includes('v0.3.0'))
+    assert.deepEqual(JSON.parse(settled), { version: 3, promptedVersions: [] })
+    await tray.invoke()
+    await dispose()
+
+    await writeFile(join(root, 'state.json'), JSON.stringify({ version: 3, promptedVersions: ['0.2.0'] }))
+    const again = harness({
+      root,
+      adapter: { isPackaged: true },
+      request: async () => release({ tag_name: 'v0.2.0' }),
+    })
+    const run = again.start({ enabled: true, initialDelayMs: 1, intervalMs: 3_600_000 })
+    await new Promise(resolve => { setTimeout(resolve, 80) })
+    assert.deepEqual(again.log.confirmed, [], 'a remembered big update does not prompt again')
+    await run.dispose()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('213 a pre-release the rollout service names downloads and verifies end to end', {
+  skip: SUPPORTED_HOST ? false : 'unsupported host platform',
+}, async (t) => {
+  mockInstallerLaunch(t)
+  const root = await tempDir('rollout-e2e')
+  try {
+    const payload = Buffer.from('rollout-installer-bytes')
+    const offered = indexRelease('0.3.0', { prerelease: true, payload })
+    let downloads = 0
+    const host = rolloutHarness({
+      root,
+      confirm: true,
+      rollout: async () => Response.json({ version: '0.3.0' }),
+      releases: [indexRelease('0.2.0'), offered],
+      downloadRequest: async (url) => {
+        downloads += 1
+        assert.equal(url, offered.assets[0].browser_download_url)
+        return new Response(payload)
+      },
+    })
+    const { tray, dispose } = host.start({ rolloutURL: ROLLOUT_TEST_URL })
+    await tray.invoke()
+    assert.deepEqual(host.log.confirmed, ['0.3.0'])
+    assert.equal(downloads, 1)
+    assert.deepEqual(await readFile(join(root, '0.3.0', offered.assets[0].name)), payload)
+    // 下载前的复查同样问灰度接口（按手动检查），才找得到这个预发布版本。
+    assert.equal(rolloutRequests(host).length, 2)
+    assert.ok(rolloutRequests(host).every(call => new URL(call.url).searchParams.get('manual') === '1'))
+    await dispose()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
 }
 
 // Plugin assertions; CSV maps observable cases to these test names.

@@ -473,8 +473,8 @@ export async function registerHostContractCases() {
         await host.tray().invoke()
         await until('the state file', () => existsSync(host.statePath))
         const state = JSON.parse(readFileSync(host.statePath, 'utf8'))
-        assert.equal(state.version, 2)
-        assert.equal(state.lastPromptedVersion, '9.9.9')
+        assert.equal(state.version, 3)
+        assert.deepEqual(state.promptedVersions, ['9.9.9'])
         if (process.platform !== 'win32') {
           // The host package is asked for 0o600/0o700; POSIX is where that is
           // observable at all.
@@ -555,6 +555,57 @@ export async function registerHostContractCases() {
       // the plugin reads neither, so the case accepts both spellings.
       const unmet = refused.requirements ?? refused.peers
       assert.ok(Object.keys(unmet).includes('@deepseek-ai/dsh'))
+    })
+
+  /* ---------------------------------------------------------------- *
+   * The rollout service, across the same bridge
+   * ---------------------------------------------------------------- */
+
+  host0('HOST-024', 'the rollout request carries the installation id across the real bridge',
+    (f) => {
+      const unsupported = supported(f)
+      if (unsupported !== undefined) return unsupported
+      return installerAssetName('9.9.9') === undefined
+        ? `platform: no installer asset is published for ${process.platform}/${process.arch}`
+        : undefined
+    },
+    async () => {
+      // A local address only: the case never reaches the real rollout service.
+      const rolloutURL = 'https://rollout.host-contract.test/v1/app/update'
+      const installationId = '0f8fad5b-d9cb-469f-a165-70867728950e'
+      const version = '9.9.9'
+      const name = installerAssetName(version)
+      // Only a pre-release carries 9.9.9: the stable-release logic alone would
+      // find nothing, so the label below proves the rollout answer was used.
+      const document = [{
+        ...releaseDocument(version, [{ name, url: `https://github.com/o/r/releases/download/v${version}/${name}`, size: 1 }]),
+        prerelease: true,
+      }]
+      const seen = []
+      await live({
+        config: { rolloutURL },
+        native: {
+          installationId,
+          respond: (url, init) => {
+            seen.push({ url, headers: new Headers(init.headers) })
+            return url.startsWith(rolloutURL) ? jsonResponse({ version }) : jsonResponse(document)
+          },
+        },
+      }, async (host) => {
+        // The snapshot field this plugin reads, as the bridge delivers it.
+        assert.equal(host.desktopRuntime.updates.installationId, installationId)
+        await host.tray().invoke()
+        await until('the rollout and index requests', () => seen.length >= 2)
+        const asked = new URL(seen[0].url)
+        assert.equal(`${asked.origin}${asked.pathname}`, rolloutURL, 'the rollout service is asked first')
+        assert.equal(asked.searchParams.get('version'), '0.7.3')
+        assert.equal(asked.searchParams.get('manual'), '1')
+        // Custom headers survive the bridge's header serialisation.
+        assert.equal(seen[0].headers.get('x-installation-id'), installationId)
+        assert.equal(seen[1].url, PRODUCT_CONFIG.releaseIndexURL)
+        await until('the tray label to announce the offered pre-release',
+          () => host.tray().label().includes(version))
+      })
     })
 
   /* ---------------------------------------------------------------- *
