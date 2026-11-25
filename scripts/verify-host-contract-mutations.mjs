@@ -195,8 +195,8 @@ const MUTATIONS = [
     id: 'peer-range',
     note: 'the declared dsh peer range is widened below the validated floor',
     edits: [['package.json',
-      '"@deepseek-ai/dsh": ">=0.2.0-rc.2 <0.3.0-0"',
-      '"@deepseek-ai/dsh": ">=0.1.0-rc.1 <0.3.0-0"']],
+      '"@deepseek-ai/dsh": ">=0.2.0-rc.2 <1.0.0-0"',
+      '"@deepseek-ai/dsh": ">=0.1.0-rc.1 <1.0.0-0"']],
     expect: ['HOST-018'],
   },
   {

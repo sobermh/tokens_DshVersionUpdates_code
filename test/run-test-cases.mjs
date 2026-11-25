@@ -261,6 +261,9 @@ async function attachCurrentUpstream(host) {
       resolveDir: source, loader: 'ts',
     },
     bundle: true, platform: 'node', format: 'esm', write: false,
+    // 产品外壳的桥里有按需 import('electron') 的分支（外部浏览器登录），这里用不到它，
+    // 而 staged 宿主不装 electron：留作外部引用，不让打包因为它失败。
+    external: ['electron'],
   })
   const { createHostRuntime, bindNativeRuntime, runtimeSnapshot, HostRpc } =
     await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'))
