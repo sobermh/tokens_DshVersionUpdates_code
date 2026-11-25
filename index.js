@@ -554,13 +554,18 @@ export function apply(ctx, config) {
   const resolveApiKey = async () => {
     const service = credentials
     if (service === undefined || typeof service?.resolve !== 'function') return ''
+    // 普通（ref 的）计时器并在结束时清掉：AbortSignal.timeout 是 unref 的，
+    // 不能指望它把事件循环撑到超时那一刻。
+    let timer
     try {
       return resolvedValue(await Promise.race([
         service.resolve(API_KEY_REF),
-        after(CREDENTIAL_TIMEOUT_MS, ''),
+        new Promise((settle) => { timer = setTimeout(settle, CREDENTIAL_TIMEOUT_MS, '') }),
       ])).trim()
     } catch {
       return ''
+    } finally {
+      clearTimeout(timer)
     }
   }
   let readClientStatus = () => ({ phase: 'idle', productName })
@@ -641,16 +646,28 @@ export function apply(ctx, config) {
     const askRollout = async (signal, manual) => {
       const apiKey = await resolveApiKey()
       if (signal.aborted) return null
-      return await requestRolloutVersion({
-        endpoint: rolloutEndpoint,
-        currentVersion: adapter.currentVersion,
-        installationId: adapter.installationId,
-        apiKey,
-        manual,
-        signal: AbortSignal.any([signal, AbortSignal.timeout(ROLLOUT_TIMEOUT_MS)]),
-        request: adapter.request,
-        userAgent: productName,
-      })
+      // 超时与检查本身的中止（卸载）都中止这次请求。超时用普通计时器、结束即清，
+      // 和 requestTimer 一样：AbortSignal.timeout 是 unref 的，事件循环里没有别的
+      // 活动时它不会触发，请求就会一直挂着。
+      const controller = new AbortController()
+      const abort = () => { controller.abort() }
+      signal.addEventListener('abort', abort, { once: true })
+      const timer = setTimeout(abort, ROLLOUT_TIMEOUT_MS)
+      try {
+        return await requestRolloutVersion({
+          endpoint: rolloutEndpoint,
+          currentVersion: adapter.currentVersion,
+          installationId: adapter.installationId,
+          apiKey,
+          manual,
+          signal: controller.signal,
+          request: adapter.request,
+          userAgent: productName,
+        })
+      } finally {
+        clearTimeout(timer)
+        signal.removeEventListener('abort', abort)
+      }
     }
 
     /** 一次版本检查；`manual` 让灰度接口跳过放量比例（暂缓名单与暂停仍然生效）。 */
@@ -1270,12 +1287,6 @@ function resolvedValue(resolved) {
   if (typeof resolved === 'string') return resolved
   if (isRecord(resolved) && typeof resolved.value === 'string') return resolved.value
   return ''
-}
-
-function after(ms, value) {
-  return new Promise(settle => {
-    AbortSignal.timeout(ms).addEventListener('abort', () => settle(value), { once: true })
-  })
 }
 
 function isEnoent(value) {

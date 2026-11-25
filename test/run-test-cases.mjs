@@ -4062,6 +4062,31 @@ test('213 a pre-release the rollout service names downloads and verifies end to 
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test('214 a credential store that never answers delays the rollout request by at most five seconds', async () => {
+  const root = await tempDir('rollout-credential-hang')
+  try {
+    const host = rolloutHarness({
+      root,
+      // 永不返回的 credentials：只有插件自己的计时器能让检查继续，测试里没有别的活动撑住事件循环。
+      credentials: { resolve: () => new Promise(() => {}) },
+      rollout: async () => Response.json({ version: null }),
+      releases: [indexRelease('0.2.0')],
+    })
+    const { tray, dispose } = host.start({ rolloutURL: ROLLOUT_TEST_URL })
+    const started = Date.now()
+    await tray.invoke()
+    const elapsed = Date.now() - started
+    assert.ok(elapsed >= 4_500 && elapsed < 9_000, `gave up on the key after ${elapsed} ms`)
+    const [call] = rolloutRequests(host)
+    assert.notEqual(call, undefined, 'the rollout service is still asked')
+    assert.equal(new Headers(call.init.headers).get('authorization'), null, 'without a key, no Authorization header')
+    assert.equal(host.log.manual[0].status, 'up-to-date')
+    await dispose()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
 }
 
 // Plugin assertions; CSV maps observable cases to these test names.

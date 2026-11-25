@@ -19,6 +19,8 @@
     才提供，否则当作没有更新；`{ "version": null }`：没有更新。
   - 失败、10 秒超时、回答不合法，或宿主没有安装标识：退回原来的逻辑（最高稳定版）。
   - 下载前的复查按手动检查问灰度接口；下载、校验、安装流程不变。
+  - 灰度请求的 10 秒超时与解析 Key 的 5 秒上限都用普通计时器并在结束时清掉，不用
+    `AbortSignal.timeout`（unref 的计时器撑不住事件循环）；新增用例 `ROLLOUT-09`。
 - 新导出 `requestRolloutVersion`、`isMajorUpdate`；`checkForStableUpdate` 新增可选的
   `offeredVersion`、`platform`、`arch`。
 - 新增用例 `PROMPT-04`…`06`、`STATE-04`、`ROLLOUT-01`…`08` 与真实宿主契约 `HOST-024`
