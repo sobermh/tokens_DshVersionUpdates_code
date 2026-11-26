@@ -28,7 +28,8 @@ type UpdateStatus =
 
 interface UpdateActionFace {
   readStatus(): Promise<UpdateStatus>
-  download(): Promise<boolean>
+  /** true = downloaded and handed off; 'declined' = the user chose "Later" in the confirm dialog. */
+  download(): Promise<boolean | 'declined'>
 }
 
 type UpdateActionProps = PropsRuntime<'sidebar.footer.action'> & InjectFace<UpdateActionFace>
@@ -106,7 +107,7 @@ function UpdateAction({ wide, readStatus, download }: UpdateActionProps) {
             if (downloading || starting) return
             setStarting(true)
             void download().catch(() => false).then((completed) => {
-              if (!completed) window.alert(zh
+              if (completed === false) window.alert(zh
                 ? '更新未完成，请重试。'
                 : 'The update did not complete. Please try again.')
             }).finally(() => {
@@ -147,7 +148,10 @@ export function apply(ctx: ClientContext): void {
     order: 10,
     inject: (): UpdateActionFace => ({
       readStatus: () => call<UpdateStatus>('status'),
-      download: async () => (await call<{ started: boolean }>('download')).started,
+      download: async () => {
+        const result = await call<{ started: boolean; declined?: boolean }>('download')
+        return result.declined === true ? 'declined' : result.started
+      },
     }),
   }, UpdateAction))
 }

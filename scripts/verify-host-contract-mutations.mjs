@@ -162,7 +162,7 @@ const MUTATIONS = [
     id: 'rpc-download-endpoint',
     note: 'the download endpoint stops answering',
     edits: [['index.js',
-      "          if (endpoint === 'download') return rpcSuccess({ started: await requestClientDownload() })",
+      "          if (endpoint === 'download') return rpcSuccess(await requestClientDownload())",
       "          if (endpoint === 'download') return rpcFailure('mutated')"]],
     // HOST-019 drives the installer handoff through this endpoint.
     expect: ['HOST-014', 'HOST-019'],

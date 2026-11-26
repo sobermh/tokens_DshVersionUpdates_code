@@ -1,5 +1,22 @@
 # 变更记录
 
+## [0.2.1] - 2026-11-26
+
+点侧栏下载按钮先看到这一版更新了什么。
+
+- 侧栏下载按钮（`download` RPC）不再直接下载，先弹手动检查用的那个确认下载对话框：
+  摘要、最多 6 条要点和「查看完整说明」，按界面语言取中文或英文。点「下载」才复查并
+  下载；点「稍后」不复查、不下载，侧栏与托盘仍显示可更新。0.2.0 起小版本只靠侧栏按钮
+  提示，原来点了就下载，用户在下载前看不到说明。
+- 确认框是单飞的：大版本自动弹窗开着时点侧栏或托盘，等的是同一个对话框，不叠第二个。
+- 侧栏弹过的版本与手动检查一样写进状态文件。
+- `download` RPC 在用户点「稍后」时回答 `{ started: false, declined: true }`，其余情况
+  仍是 `{ started }`；侧栏据此在「稍后」时不弹「更新未完成，请重试」。
+- 大版本只弹一次的规则、托盘、手动检查、下载与校验、灰度接口调用都不变。
+- 新增用例 `SIDEBAR-01`…`03`（其中 `SIDEBAR-03` 在子进程里用替身 `electron` 核对侧栏
+  对话框与手动检查逐字段相同、英文界面取英文说明）；`ENTRY-02` 与真实宿主契约
+  `HOST-019` 改为侧栏下载先问确认。
+
 ## [0.2.0] - 2026-11-25
 
 后台检查不再每次启动都弹窗；接入市场服务端的灰度接口。
@@ -173,3 +190,4 @@
 [0.1.6]: https://github.com/sobermh/tokens_DshVersionUpdates_code/compare/v0.1.5...v0.1.6
 [0.1.7]: https://github.com/sobermh/tokens_DshVersionUpdates_code/compare/v0.1.6...v0.1.7
 [0.2.0]: https://github.com/sobermh/tokens_DshVersionUpdates_code/compare/v0.1.7...v0.2.0
+[0.2.1]: https://github.com/sobermh/tokens_DshVersionUpdates_code/compare/v0.2.0...v0.2.1

@@ -642,29 +642,38 @@ export async function registerHostContractCases() {
       t.after(() => { globalThis.fetch = originalFetch })
 
       const release = newerRelease(version, [{ name, url: assetUrl, size: payload.byteLength, digest }])
-      // The adapter declines, so the tray click only discovers the update; the
-      // handoff is then driven through the RPC endpoint, which answers only
-      // once the whole download and installer handoff has settled. Waiting on
-      // the file instead would race on the second run, where it already exists.
-      // (The confirmation path itself is HOST-010's.)
-      const run = async (directory) => await live({
-        config: { downloadDirectory: directory },
-        native: { respond: () => jsonResponse([release]), confirm: async () => false },
-      }, async (host) => {
-        await host.tray().invoke()
-        await until('the tray to offer the update', () => host.tray().label().includes(version))
-        const response = await rpcCall(host, 'download')
-        assert.equal(response.status, 200)
-        assert.equal(response.body.result.ok, true)
-        // The host's text-only IPC must never be asked to carry installer bytes.
-        assert.equal(
-          host.nativeCalls.requests.some(call => call.url === assetUrl), false,
-          'installer bytes went through the host update request adapter',
-        )
-        assert.equal(existsSync(path.join(directory, version, name)), true,
-          'the verified installer is not where the configured directory puts it')
-        return path.join(directory, version, name)
-      })
+      // The adapter declines the tray's dialog, so the tray click only discovers
+      // the update; the handoff is then driven through the RPC endpoint, whose
+      // own confirm dialog (since 0.2.1) the adapter accepts. The endpoint
+      // answers only once the whole download and installer handoff has settled.
+      // Waiting on the file instead would race on the second run, where it
+      // already exists. (The confirmation path itself is HOST-010's.)
+      const run = async (directory) => {
+        let asked = 0
+        return await live({
+          config: { downloadDirectory: directory },
+          native: { respond: () => jsonResponse([release]), confirm: async () => (asked += 1) > 1 },
+        }, async (host) => {
+          await host.tray().invoke()
+          await until('the tray to offer the update', () => host.tray().label().includes(version))
+          const response = await rpcCall(host, 'download')
+          assert.equal(response.status, 200)
+          assert.equal(response.body.result.ok, true)
+          // `started` stays false here: the fixture installer is not a real
+          // executable, so the final handoff fails. What matters is that the
+          // sidebar asked first and the user's "Download" was honoured.
+          assert.equal(response.body.result.value.declined, undefined)
+          assert.equal(host.nativeCalls.confirms.length, 2, 'the sidebar download asks before it starts')
+          // The host's text-only IPC must never be asked to carry installer bytes.
+          assert.equal(
+            host.nativeCalls.requests.some(call => call.url === assetUrl), false,
+            'installer bytes went through the host update request adapter',
+          )
+          assert.equal(existsSync(path.join(directory, version, name)), true,
+            'the verified installer is not where the configured directory puts it')
+          return path.join(directory, version, name)
+        })
+      }
 
       // A fresh directory per run, removed afterwards: a leftover installer
       // from an earlier run would make the first download look like a reuse.

@@ -199,7 +199,7 @@ function UpdateAction({ wide, readStatus, download }) {
         if (downloading || starting) return;
         setStarting(true);
         void download().catch(() => false).then((completed) => {
-          if (!completed) window.alert(zh ? "\u66F4\u65B0\u672A\u5B8C\u6210\uFF0C\u8BF7\u91CD\u8BD5\u3002" : "The update did not complete. Please try again.");
+          if (completed === false) window.alert(zh ? "\u66F4\u65B0\u672A\u5B8C\u6210\uFF0C\u8BF7\u91CD\u8BD5\u3002" : "The update did not complete. Please try again.");
         }).finally(() => {
           setStarting(false);
           void refresh();
@@ -234,7 +234,10 @@ function apply(ctx) {
     order: 10,
     inject: () => ({
       readStatus: () => call("status"),
-      download: async () => (await call("download")).started
+      download: async () => {
+        const result = await call("download");
+        return result.declined === true ? "declined" : result.started;
+      }
     })
   }, UpdateAction));
 }

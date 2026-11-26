@@ -569,7 +569,7 @@ export function apply(ctx, config) {
     }
   }
   let readClientStatus = () => ({ phase: 'idle', productName })
-  let requestClientDownload = async () => false
+  let requestClientDownload = async () => ({ started: false })
   ctx.effect(() => {
     let disposed = false
     let checking = false
@@ -769,18 +769,18 @@ export function apply(ctx, config) {
     }
 
     /* ------------------- 确认下载与安装包移交 ------------------- */
-    const startDownload = (version, confirmFirst = true) => {
+    /** 先弹确认再下载；用户点「稍后」时结果为 'declined'，与下载失败区分开。 */
+    const startDownload = (version) => {
       if (downloadTask !== undefined) return downloadTask
       const task = (async () => {
-        if (confirmFirst) {
-          let confirmed
-          try {
-            confirmed = await confirmDownload(version)
-          } catch {
-            return
-          }
-          if (!confirmed || disposed) return
+        let confirmed
+        try {
+          confirmed = await confirmDownload(version)
+        } catch {
+          return
         }
+        if (disposed) return
+        if (!confirmed) return 'declined'
 
         // 下载是用户主动要的，复查按手动检查问灰度接口；复查出更新的版本时不下载旧的，
         // 侧栏换成新版本，用户再点一次即可。
@@ -857,10 +857,14 @@ export function apply(ctx, config) {
       if (!disposed) await startDownload(version)
     }
 
+    /** 侧栏下载按钮：和手动检查一样先弹带发布说明的确认框，点「下载」才开始。 */
     requestClientDownload = async () => {
       const version = availableVersion
-      if (disposed || version === undefined || !adapter.canDownload) return false
-      return await startDownload(version, false) === true
+      if (disposed || version === undefined || !adapter.canDownload) return { started: false }
+      await rememberPrompt(version)
+      if (disposed) return { started: false }
+      const outcome = await startDownload(version)
+      return outcome === 'declined' ? { started: false, declined: true } : { started: outcome === true }
     }
 
     /* ------------------- 手动与后台两条触发路径 ------------------- */
@@ -931,7 +935,7 @@ export function apply(ctx, config) {
     return async () => {
       disposed = true
       readClientStatus = () => ({ phase: 'idle', productName })
-      requestClientDownload = async () => false
+      requestClientDownload = async () => ({ started: false })
       if (pollTimer !== undefined) clearTimeout(pollTimer)
       if (requestTimer !== undefined) clearTimeout(requestTimer)
       requestController?.abort()
@@ -957,7 +961,7 @@ export function apply(ctx, config) {
         UPDATE_RPC_CHANNEL,
         async (endpoint) => {
           if (endpoint === 'status') return rpcSuccess(readClientStatus())
-          if (endpoint === 'download') return rpcSuccess({ started: await requestClientDownload() })
+          if (endpoint === 'download') return rpcSuccess(await requestClientDownload())
           return rpcFailure(`unknown endpoint ${String(endpoint)}`)
         },
         { authority: 'trusted-host' },

@@ -310,6 +310,7 @@ async function upstreamDownloadRegression(t, failDownload) {
   let binaryRequests = 0
   const host = harness({
     root, connection: true,
+    confirm: [false, true],
     request: async (target, init) => {
       assert.ok(isReleaseMetadataRequest(target), 'Installer must not cross the text-only upstream bridge')
       assert.equal(init.redirect, 'error')
@@ -335,6 +336,7 @@ async function upstreamDownloadRegression(t, failDownload) {
     })
     assert.deepEqual(host.log.confirmed, ['0.2.0'])
     assert.deepEqual(await instance.rpc('download'), { ok: true, value: { started: !failDownload } })
+    assert.deepEqual(host.log.confirmed, ['0.2.0', '0.2.0'], 'the sidebar download asks across the bridge first')
     assert.equal(binaryRequests, 1)
     const path = join(root, '0.2.0', asset.name)
     if (failDownload) assert.equal(existsSync(path), false)
@@ -469,6 +471,11 @@ function harness(options = {}) {
     },
     async confirmDownload(version) {
       log.confirmed.push(version)
+      // 数组按次序逐次回答（用完后沿用最后一个），例如 [false, true] = 托盘点「稍后」、侧栏点「下载」。
+      if (Array.isArray(options.confirm)) {
+        return options.confirm[log.confirmed.length - 1] ?? options.confirm.at(-1)
+      }
+      if (typeof options.confirm === 'function') return options.confirm(version)
       return options.confirm ?? false
     },
     async showManualCheckResult(result) { log.manual.push(result) },
@@ -547,6 +554,7 @@ test('installer bytes bypass the text-only Host bridge', { skip: !['win32', 'dar
   let downloads = 0
   const host = harness({
     root, connection: true,
+    confirm: [false, true],
     request: async (url) => {
       assert.ok(isReleaseMetadataRequest(url), 'binary requests must not reach Host IPC')
       return release({ assets: [{ ...asset, browser_download_url: `https://github.com/o/r/${asset.name}` }] })
@@ -579,6 +587,7 @@ test('failed binary request does not report started true', { skip: !['win32', 'd
   const asset = downloadableRelease('0.2.0', Buffer.from('bytes'))
   const host = harness({
     root, connection: true,
+    confirm: [false, true],
     request: async () => release({ assets: [{ ...asset, browser_download_url: `https://github.com/o/r/${asset.name}` }] }),
     downloadRequest: async () => { throw new Error('offline') },
   })
@@ -2275,7 +2284,7 @@ test('171 download rechecks a withdrawn or prerelease target before fetching byt
     const host = harness({
       root,
       connection: true,
-      confirm: false,
+      confirm: [false, true],
       request: async () => currentRelease.clone(),
       downloadRequest: async () => {
         downloads += 1
@@ -2309,7 +2318,7 @@ test('172 download refreshes to a newer stable target before allowing a retry', 
   const host = harness({
     root,
     connection: true,
-    confirm: false,
+    confirm: [false, true],
     request: async () => {
       const asset = currentVersion === '0.2.0' ? oldAsset : newAsset
       return release({
@@ -2399,7 +2408,7 @@ test('174 disposing a stalled download aborts it and a new session can retry', {
   const stalled = harness({
     root,
     connection: true,
-    confirm: false,
+    confirm: [false, true],
     request: async () => releaseResponse(),
     downloadRequest: async (_url, init) => new Promise((resolve, reject) => {
       stalledRequestStarted()
@@ -2417,7 +2426,7 @@ test('174 disposing a stalled download aborts it and a new session can retry', {
     const retry = harness({
       root,
       connection: true,
-      confirm: false,
+      confirm: [false, true],
       request: async () => releaseResponse(),
       downloadRequest: async () => new Response(payload),
     }).start()
@@ -3115,7 +3124,7 @@ test('167 downloadInstaller reports monotonic byte progress through completion',
   }
 })
 
-test('168 client RPC exposes an available update and starts its download without another confirmation', {
+test('168 client RPC exposes an available update and starts its download once the confirm dialog says so', {
   skip: SUPPORTED_HOST ? false : 'unsupported host platform',
 }, async (t) => {
   mockInstallerLaunch(t)
@@ -3128,7 +3137,7 @@ test('168 client RPC exposes an available update and starts its download without
     const host = harness({
       root,
       connection: true,
-      confirm: false,
+      confirm: [false, true],
       request: async (url) => {
         if (isReleaseMetadataRequest(url)) {
           return release({
@@ -3161,7 +3170,7 @@ test('168 client RPC exposes an available update and starts its download without
     }
     assert.equal(downloading.value.phase, 'downloading')
     assert.equal(downloading.value.totalBytes, payload.byteLength)
-    assert.deepEqual(host.log.confirmed, ['0.2.0'], 'the sidebar button is already an explicit confirmation')
+    assert.deepEqual(host.log.confirmed, ['0.2.0', '0.2.0'], 'the sidebar button asks before it downloads')
 
     openGate()
     assert.deepEqual(await pending, { ok: true, value: { started: true } })
@@ -4083,6 +4092,190 @@ test('214 a credential store that never answers delays the rollout request by at
     assert.equal(new Headers(call.init.headers).get('authorization'), null, 'without a key, no Authorization header')
     assert.equal(host.log.manual[0].status, 'up-to-date')
     await dispose()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('215 declining the sidebar confirm dialog downloads nothing and leaves the update available', async () => {
+  const root = await tempDir('sidebar-decline')
+  try {
+    let downloads = 0
+    const host = harness({
+      root,
+      connection: true,
+      confirm: false,
+      request: async () => release({ tag_name: 'v0.2.0' }),
+      downloadRequest: async () => {
+        downloads += 1
+        return new Response('never')
+      },
+    })
+    const { tray, rpc, dispose } = host.start()
+    try {
+      await tray.invoke()
+      const lookups = host.log.requests.length
+      assert.deepEqual(await rpc('download'), { ok: true, value: { started: false, declined: true } })
+      assert.deepEqual(host.log.confirmed, ['0.2.0', '0.2.0'], 'the sidebar button opens the confirm dialog')
+      assert.equal(downloads, 0)
+      assert.equal(host.log.requests.length, lookups, '"Later" does not even recheck the release')
+      assert.deepEqual(await rpc('status'), {
+        ok: true,
+        value: { phase: 'available', productName: 'TokensHarness', version: '0.2.0' },
+      })
+      assert.equal(tray.label(), 'TokensHarness 0.2.0 Available')
+      // 侧栏弹过的版本和手动检查一样记进状态文件，后台检查不会再为它自动弹。
+      assert.deepEqual(JSON.parse(await waitForState(join(root, 'state.json'), text => text.includes('0.2.0'))),
+        { version: 3, promptedVersions: ['0.2.0'] })
+    } finally {
+      await dispose()
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('216 the sidebar button never stacks a second confirm dialog on one that is already open', async () => {
+  const root = await tempDir('sidebar-single-dialog')
+  try {
+    const answers = []
+    const host = harness({
+      root,
+      connection: true,
+      adapter: { isPackaged: true, currentVersion: '0.7.19' },
+      confirm: () => new Promise(resolve => { answers.push(resolve) }),
+      request: async () => release({ tag_name: 'v0.8.0' }),
+    })
+    const { tray, rpc, dispose } = host.start({ enabled: true, initialDelayMs: 1, intervalMs: 3_600_000 })
+    try {
+      const until = async (predicate) => {
+        for (let attempt = 0; attempt < 200 && !predicate(); attempt += 1) {
+          await new Promise(resolve => { setTimeout(resolve, 10) })
+        }
+        assert.ok(predicate())
+      }
+      // 大版本的后台自动弹窗开着时点侧栏：等的是同一个对话框。
+      await until(() => answers.length === 1)
+      const sidebar = rpc('download')
+      await new Promise(resolve => { setTimeout(resolve, 50) })
+      assert.deepEqual(host.log.confirmed, ['0.8.0'], 'one dialog, not one per entry point')
+      answers[0](false)
+      assert.deepEqual(await sidebar, { ok: true, value: { started: false, declined: true } })
+
+      // 反过来：侧栏的对话框开着时点托盘，同样不叠第二个。
+      const again = rpc('download')
+      await until(() => answers.length === 2)
+      const fromTray = tray.invoke()
+      await new Promise(resolve => { setTimeout(resolve, 50) })
+      assert.deepEqual(host.log.confirmed, ['0.8.0', '0.8.0'])
+      answers[1](false)
+      assert.deepEqual(await again, { ok: true, value: { started: false, declined: true } })
+      await fromTray
+      assert.equal(answers.length, 2)
+    } finally {
+      // 失败时也要卸载：否则一小时的轮询计时器会让整个测试进程挂住。
+      for (const answer of answers) answer(false)
+      await dispose()
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+/**
+ * 子进程：把 `electron` 解析到一个记录 showMessageBox 入参的替身，插件就走品牌确认框
+ * （带发布说明的那一个）。缓存的 Electron 模块是进程级的，所以不能在本进程里换。
+ */
+const SIDEBAR_DIALOG_CHILD = `
+import { registerHooks } from 'node:module'
+import { readFile } from 'node:fs/promises'
+globalThis.dialogs = []
+globalThis.opened = []
+globalThis.answers = [1, 2, 1, 1]
+const fake = 'export const dialog = { showMessageBox: async (o) => { globalThis.dialogs.push(o); return { response: globalThis.answers.shift() } } };'
+  + ' export const shell = { openExternal: async (url) => { globalThis.opened.push(url) } };'
+registerHooks({
+  resolve: (specifier, context, next) => specifier === 'electron'
+    ? { url: 'data:text/javascript,' + encodeURIComponent(fake), shortCircuit: true }
+    : next(specifier, context),
+})
+const [pluginURL, notesPath, statePath] = process.argv.slice(2)
+const { apply, Config } = await import(pluginURL)
+const body = await readFile(notesPath, 'utf8')
+const entry = { tag_name: 'v0.8.0', draft: false, prerelease: false, assets: [], body }
+const adapterCalls = []
+let tray
+let rpc
+const disposers = []
+const ctx = {
+  desktopRuntime: {
+    locale: 'en-US',
+    updates: {
+      isPackaged: false,
+      canDownload: true,
+      currentVersion: '0.7.4',
+      statePath,
+      request: async (url) => url.endsWith('/releases.json') ? Response.json([entry]) : Response.json(entry),
+      async confirmDownload(version) { adapterCalls.push(version); return false },
+      async showManualCheckResult() {},
+    },
+    registerTrayItem(item) { tray = item; return { refresh() {}, dispose() {} } },
+  },
+  webServer: { port: 43120, register: () => () => {} },
+  effect(register) { const disposer = register(); if (typeof disposer === 'function') disposers.push(disposer) },
+  inject(services, use) {
+    if (services[0] !== 'connection') return
+    use({ ...ctx, connection: { rpc: { handle(_channel, handler) { rpc = handler; return () => {} } } } })
+  },
+}
+apply(ctx, Config({ enabled: false }))
+await tray.invoke()
+const english = await rpc('download')
+ctx.desktopRuntime.locale = 'zh-CN'
+const chinese = await rpc('download')
+for (const disposer of disposers.reverse()) await disposer()
+process.stdout.write(JSON.stringify({ dialogs: globalThis.dialogs, opened: globalThis.opened, english, chinese, adapterCalls }))
+`
+
+test('217 the sidebar confirm dialog is the manual check one, with the notes in the interface language', async () => {
+  const root = await tempDir('sidebar-dialog')
+  try {
+    const script = join(root, 'child.mjs')
+    await writeFile(script, SIDEBAR_DIALOG_CHILD)
+    const child = childProcess.spawnSync(process.execPath, [
+      script,
+      new URL('../index.js', import.meta.url).href,
+      fileURLToPath(new URL('fixtures/release-notes-v0.7.4.md', import.meta.url)),
+      join(root, 'state.json'),
+    ], { encoding: 'utf8', timeout: 60_000 })
+    assert.equal(child.status, 0, child.stderr)
+    const { dialogs, opened, english, chinese, adapterCalls } = JSON.parse(child.stdout)
+    const [manual, sidebar, sidebarAgain, sidebarChinese] = dialogs
+    assert.equal(dialogs.length, 4)
+    assert.deepEqual(adapterCalls, [], 'the branded dialog is used, not the adapter fallback')
+
+    // 手动检查与侧栏是同一个对话框：同样的说明、按钮与默认键。
+    assert.deepEqual(sidebar, manual)
+    const { notesButtonId, notesURL, ...expected } = describeDownloadPrompt(
+      '0.8.0', realReleaseNotes, { ...DIALOG_BRAND, locale: 'en-US' })
+    assert.deepEqual(sidebar, expected)
+    assert.deepEqual(sidebar.buttons, ['Download', 'Later', 'View Full Notes'])
+    const englishNotes = summarizeReleaseNotes(realReleaseNotes, 'en-US')
+    assert.ok(sidebar.detail.includes(englishNotes.summary))
+    assert.ok(sidebar.detail.includes(`• ${englishNotes.highlights[0]}`))
+    // 「查看完整说明」开这一版的 Release 页后重新弹出；点「稍后」不下载。
+    assert.deepEqual(sidebarAgain, sidebar)
+    assert.deepEqual(opened, [notesURL])
+    assert.equal(notesButtonId, 2)
+    assert.deepEqual(english, { ok: true, value: { started: false, declined: true } })
+
+    // 中文界面取中文那半边。
+    const { notesButtonId: _id, notesURL: _url, ...expectedChinese } = describeDownloadPrompt(
+      '0.8.0', realReleaseNotes, { ...DIALOG_BRAND, locale: 'zh-CN' })
+    assert.deepEqual(sidebarChinese, expectedChinese)
+    assert.deepEqual(sidebarChinese.buttons, ['下载', '稍后', '查看完整说明'])
+    assert.ok(sidebarChinese.detail.includes(summarizeReleaseNotes(realReleaseNotes, 'zh-CN').summary))
+    assert.deepEqual(chinese, { ok: true, value: { started: false, declined: true } })
   } finally {
     await rm(root, { recursive: true, force: true })
   }
